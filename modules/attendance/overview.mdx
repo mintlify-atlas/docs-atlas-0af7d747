@@ -27,9 +27,9 @@ The following rules are enforced automatically by `ClassroomAttendanceService::v
 
 | Plantel Status | Classroom Outcome | Alert |
 |----------------|-------------------|-------|
-| **Absent** (`absent`) | `ClassroomAttendanceRecord` is blocked — teacher cannot mark the student present. The system auto-applies `absent` status. | None (expected behaviour) |
+| **Absent** (`absent`) | `ClassroomAttendanceRecord` is blocked — `validateCrossAttendance()` throws an exception and the record is skipped. The teacher receives a warning notification with a count of skipped entries. | None (expected behaviour) |
 | **Present** (`present` or `late`) + classroom **absent** | Record is saved but flagged as a **pasilleo** discrepancy. Dashboard discrepancy panel surfaces the student and the number of missed classes. | ⚠️ Pasilleo alert |
-| **Excused** (`excused`) | Status propagates automatically to all `ClassroomAttendanceRecord` entries for that day. Teacher cannot override it to present. | None |
+| **Excused** (`excused`) | `ClassroomAttendanceRecord` is blocked — same exception as `absent`. Existing absent records for that student are updated to `excused` retroactively by `AttendanceExcuseObserver` when the excuse is approved. Teacher cannot override to present. | None |
 | **No Plantel record** + approved excuse | Classroom record allowed; system treats the approved excuse as equivalent to a Plantel check-in for that day. | None |
 
 ---

@@ -1,5 +1,5 @@
 ---
-title: "ORVIAN Module System and Feature Flags"
+title: "ORVIAN Module System: Feature Flags and Plan Tiers"
 sidebarTitle: "Modules"
 description: "ORVIAN is a modular monolith. Each module is a feature flag controlled per plan. Learn how modules, plans, and features work together."
 ---
@@ -44,7 +44,7 @@ This automatically populates the module navbar with the correct title, icon, and
 
 **Adding a new module** requires only one change: add the entry to `config/modules.php`. Every component that consumes the config inherits it automatically. Adding a sub-link to an existing module is equally simple — add the `['label', 'route']` array to that module's `moduleLinks` and it appears in the navbar for all components in that module.
 
-**Modules not yet in `config/modules.php`** (e.g., `notas`, `horarios`) are commented out. Uncomment the entry to expose it in the module navbar once the implementation is ready.
+**Modules not yet in `config/modules.php`** (e.g., `notas`, `horarios`, `conversaciones`, `reportes`, `classroom`) have no navbar configuration. Dashboard tiles for these modules are rendered directly in the dashboard view; adding a `config/modules.php` entry is required before a module can provide a proper module navbar.
 
 ---
 
@@ -111,9 +111,9 @@ public function getIcon(): string
 }
 ```
 
-### `School::hasFeature()`
+### `School::canAccess()` and `Plan::hasFeature()`
 
-The school's plan is eager-loaded when needed and the `hasFeature()` check is delegated to the plan:
+The school's plan is eager-loaded when needed and the feature check is performed through `School::canAccess()`, which delegates to `Plan::hasFeature()`:
 
 ```php
 // app/Models/Tenant/Plan.php
@@ -123,9 +123,12 @@ public function hasFeature(string $featureSlug): bool
     return $this->features->contains('slug', $featureSlug);
 }
 
-// app/Models/Tenant/School.php (line 162)
-// $school->hasFeature('attendance_qr')
-// → delegates to $this->plan->hasFeature($featureSlug)
+// app/Models/Tenant/School.php
+public function canAccess(string $featureSlug): bool
+{
+    // Delegates to the plan — returns false if no plan is assigned
+    return $this->plan && $this->plan->hasFeature($featureSlug);
+}
 ```
 
 ### Dashboard feature-gating in practice
@@ -195,7 +198,7 @@ The component is used consistently in the module navbar, dashboard tiles, plan f
       module="asistencia"
       title="Asistencia"
       subtitle="Control"
-      :active="$school->hasFeature('attendance_qr')"
+      :active="$school->canAccess('attendance_qr')"
       url="{{ route('app.attendance.dashboard') }}" />
 
   {{-- ❌ Avoid: custom card markup --}}

@@ -25,7 +25,7 @@ The scanner interface runs in **hybrid mode**: it primarily decodes QR codes fro
 
 **QR code generation:** Each student's `qr_code` value is a unique institutional code generated automatically by `StudentObserver` when the student record is first created. Coordinators do not need to manage or regenerate these codes manually.
 
-**Local asset delivery:** The QR decoding library is served from `public/vendor/face-api/face-api.min.js` — **not from a CDN**. This ensures the scanner continues to work in environments with strict outbound firewall rules (e.g. Fortinet-managed school networks) where third-party CDN domains may be blocked.
+**Local asset delivery:** The QR decoding library (`html5-qrcode`) is bundled into the application's compiled `app.js` via NPM/Vite — it is **not** loaded from a CDN. This ensures the QR scanner continues to work in environments with strict outbound firewall rules (e.g. Fortinet-managed school networks) where third-party CDN domains may be blocked.
 
 ---
 

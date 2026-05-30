@@ -1,5 +1,5 @@
 ---
-title: "Course Sections, Levels, and Academic Structure"
+title: "Course Sections, Levels, and the Academic Structure"
 sidebarTitle: "Courses"
 description: "Configure school grade levels, course sections, and technical titles in ORVIAN. The CourseForm wizard walks you through a 4-step section setup."
 ---
@@ -7,7 +7,7 @@ description: "Configure school grade levels, course sections, and technical titl
 ORVIAN models the Dominican Republic educational hierarchy — **Level → Grade → SchoolSection**. Sections support both regular academic tracks and technical specializations (bachillerato técnico), and are the atomic unit that students, teachers, and attendance records are attached to.
 
 <Note>
-  The active `AcademicYear` is resolved automatically from the current month — there is no manual year selector in the CourseForm wizard or anywhere in the Academic module. Year transitions are handled by the system when the calendar month changes.
+  The active `AcademicYear` is determined by the `is_active` flag on the `AcademicYear` model — only one year per school can be active at a time. There is no manual year selector in the CourseForm wizard or anywhere in the Academic module. Year transitions require setting a new `AcademicYear` as active.
 </Note>
 
 ## Academic Hierarchy
@@ -115,7 +115,7 @@ The section detail view provides:
 
 The technical catalog is seeded from the MINERD official catalog via `TechnicalCatalogSeeder`:
 
-```
+```text
 TechnicalFamily  →  TechnicalTitle
 ```
 
@@ -132,5 +132,6 @@ When a school completes the onboarding wizard, the `SchoolConfigured` event is d
 - Enabled levels and their grades.
 - Configured parallel letters (e.g., A, B, C).
 - Registered school shifts.
+- For grades where `allows_technical = true`, one additional section per configured `TechnicalTitle` ID (`title_ids`) is also created with the corresponding `technical_title_id` set.
 
 This means a newly configured school arrives at the Academic module with a pre-populated section tree matching the wizard's input — no manual section creation is required for the initial structure. The CourseForm wizard is intended for adding sections **after** onboarding, such as opening a new parallel mid-year or adding a new technical track.

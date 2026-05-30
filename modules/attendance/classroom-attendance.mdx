@@ -40,12 +40,12 @@ When a teacher opens `ClassroomAttendanceLive`, the component queries all active
 
 | Plantel Record Status | Classroom Outcome |
 |-----------------------|-------------------|
-| `absent` | `ClassroomAttendanceRecord` blocked. The service throws an exception: *"El estudiante está marcado como 'Ausente' en el plantel."* The record is skipped (`skipped` counter incremented) and the teacher receives a warning notification summarising skipped entries. |
-| `excused` | `ClassroomAttendanceRecord` blocked with same exception. The teacher's submitted status is ignored; the absence-excused status propagates from Plantel. |
+| `absent` | `ClassroomAttendanceRecord` blocked. The service throws an exception: *"El estudiante está marcado como 'Ausente' en el plantel. No puede registrarse como presente en aula."* The record is skipped (`skipped` counter incremented) and the teacher receives a warning notification summarising skipped entries. |
+| `excused` | `ClassroomAttendanceRecord` blocked with the same exception (the status label is substituted dynamically: *"El estudiante está marcado como 'Justificado' en el plantel."*). The teacher's submitted status is ignored. |
 | `present` or `late` + teacher submits `present` + student has approved excuse | Status is silently forced to `excused` by `ExcuseService` integration inside `takeClassAttendance()`. |
 | `present` or `late` + teacher submits `absent` | Record saved as `absent`. This combination is detected as **pasilleo** by `detectDiscrepancies()` and surfaced in the dashboard discrepancy panel. |
 | No Plantel record + approved excuse | Recording allowed. The excuse is treated as equivalent to a Plantel check-in. |
-| No Plantel record + no excuse | `validateCrossAttendance()` throws an exception: *"El estudiante no ha registrado entrada al plantel hoy."* |
+| No Plantel record + no excuse | `validateCrossAttendance()` throws an exception: *"El estudiante no ha registrado entrada al plantel hoy. Debe pasar por la portería primero o tener una excusa aprobada."* |
 
 The `saveAttendance()` method returns a result array with `recorded` (successful inserts/updates) and `skipped` (blocked by cross-validation) counts. The teacher sees a success toast if `skipped === 0`, or a warning toast listing how many entries were omitted if skipped > 0.
 

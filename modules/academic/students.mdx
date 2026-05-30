@@ -53,6 +53,7 @@ The same `StudentForm` component handles both creation and editing (at `/app/aca
 | Field | Validation | Notes |
 |-------|-----------|-------|
 | `date_of_birth` | `nullable`, date | — |
+| `address` | `nullable` | Home address |
 | `photo` | `nullable`, image, max 2 MB | Triggers face encoding on save |
 | `tutor_name` | `nullable`, max 120 | Guardian name |
 | `tutor_phone` | `nullable`, E.164 regex | Must match `+[1-9]\d{7,14}` for WhatsApp |
@@ -89,13 +90,13 @@ If a photo is uploaded, `StudentService::updatePhoto()` stores it and then `Face
 **Route:** `GET /app/academic/students/import`  
 **Permission:** `students.import`
 
-The import wizard processes Excel (`.xlsx`, `.xls`) and CSV files exported from the Dominican Republic's SIGERD system, up to 10 MB. It runs in five stages:
+The import wizard processes Excel (`.xlsx`, `.xls`) and CSV files exported from the Dominican Republic's SIGERD system, up to 10 MB. It runs in three stages:
 
 ### Step 1 — Upload File
 
 The user selects the file. On upload, `RawStudentImport` reads the first row to extract the column headers. The headers are stored in `$headers` and the wizard advances to Step 2.
 
-### Step 2 — Column Mapping
+### Step 2 — Column Mapping & Import
 
 A visual mapping interface presents each column header from the source file alongside a dropdown of ORVIAN's internal field names. The wizard auto-detects common SIGERD column names using keyword matching:
 
@@ -112,15 +113,11 @@ A visual mapping interface presents each column header from the source file alon
 
 The user confirms or corrects each mapping. At minimum, `first_name` and `last_name` must be mapped before proceeding. A **default section** can be selected as a fallback for rows where the section cannot be resolved.
 
-### Step 3 — Background Processing
+Clicking **Start Import** dispatches the `ProcessStudentImport` Laravel Job. The file is stored at `imports/students/{schoolId}/import_{timestamp}.{ext}` and a `StudentImportRecord` is created with status `pending`. The wizard advances to Step 3.
 
-Clicking **Start Import** dispatches the `ProcessStudentImport` Laravel Job. The file is stored at `imports/students/{schoolId}/import_{timestamp}.{ext}` and a `StudentImportRecord` is created with status `pending`. The wizard UI moves to a **real-time progress screen**.
-
-### Step 4 — Real-Time Progress
+### Step 3 — Monitor Progress & Download Errors
 
 The `importRecord` computed property polls the `StudentImportRecord` for status updates. The progress bar reflects the job's advancement through the uploaded rows.
-
-### Step 5 — Error Log Download
 
 After completion, any rows that failed processing are available for download as a CSV via `downloadErrors()`. The error file includes all original row data plus an `Error` column describing the failure reason.
 

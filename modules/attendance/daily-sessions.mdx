@@ -20,7 +20,8 @@ A `DailyAttendanceSession` moves through the following states during its lifecyc
 |-------|-------------|-------------------|
 | **Open** | The session is active. Attendance recording is permitted for the associated shift. The dashboard calendar shows an amber indicator. | `NULL` |
 | **Closed** | The session has been finalised for the day. `PlantelAttendanceService::markAbsences()` runs during close, auto-creating absence records for any enrolled students in the shift who have no entry record. KPI totals (`total_present`, `total_late`, `total_absent`, `total_excused`) are written to the session row. | timestamp |
-| **Under Review** | A closed session that has been flagged for verification by a user with `attendance_plantel.verify`. The audit view at `/app/attendance/audit/{sessionId}` is the primary tool for this workflow. | timestamp |
+
+The model exposes a single `isOpen(): bool` helper that returns `true` when `closed_at` is `NULL`. There is no separate "Under Review" state on the session record itself — auditing is an access-control layer (the audit view at `/app/attendance/audit/{sessionId}` requires `attendance_plantel.verify`) applied on top of closed sessions.
 
 ---
 
@@ -50,7 +51,7 @@ Closing is initiated from the **Session Hub** (see below) or from the `Attendanc
 3. Projects the final absent and excused counts (real recorded + projected unrecorded).
 4. Opens a confirmation modal showing the projected summary before you commit.
 
-On confirmation, `closeSession()` is called, which:
+On confirmation, `closeSession()` is called (requires `attendance_plantel.close_session`), which:
 - Calls `PlantelAttendanceService::markAbsences()` — creates `PlantelAttendanceRecord` rows for all students still without a record, automatically assigning `excused` status to those with an approved excuse and `absent` to the rest.
 - Calls `PlantelAttendanceService::closeDailySession()` — stamps `closed_at`, `closed_by`, and writes the final KPI columns.
 

@@ -4,7 +4,7 @@ sidebarTitle: "School Setup"
 description: "Walk through ORVIAN's onboarding wizard to configure a new school, set academic structure, select a plan, and complete tenant activation."
 ---
 
-ORVIAN supports two onboarding paths: the platform Owner creating a school directly from the admin panel, and a school registering itself via the public sign-up page. Both flows ultimately lead into a wizard that configures the school's academic structure, geographic data, and initial Director account. When the wizard completes, a set of listeners fires automatically to build the full tenant environment from scratch.
+ORVIAN supports two onboarding paths: the platform Owner creating a school directly from the admin panel, and a school registering itself via the public sign-up page. Both flows lead into a wizard that configures the school's academic structure, geographic data, and subscription plan. The Owner flow additionally creates the initial Director account. When the wizard completes, listener classes and post-commit callbacks fire to build the full tenant environment.
 
 ## Owner-Initiated Setup
 
@@ -14,26 +14,26 @@ The Owner accesses `/admin/setup`, which renders the `SchoolWizard` Livewire com
 |------|---------|
 | **1 — School Data** | Institution name, SIGERD code, phone, management regime, and modality |
 | **2 — Geographic Info** | Province, municipality, regional education authority, and educational district (cascaded selectors) |
-| **3 — Academic Structure** | Education levels, grades, cycles, parallels, and optional technical titles for upper-secondary |
-| **4 — Plan Selection** | Choose a subscription plan from the active plan catalog (rendered with `x-ui.plan-card`) |
-| **5 — Review & Confirm** | Summary of all entered data before final submission |
+| **3 — Academic Structure** | Education levels, shifts, section labels, academic year dates, and optional technical titles for upper-secondary |
+| **4 — Plan Selection** | Choose a subscription plan from the active plan catalog |
+| **5 — Director Account** | Name, email, and password for the initial School Principal user |
 
 On confirmation, `CompleteOnboardingAction` is called. It creates the school record, provisions the Director user account, and fires the `SchoolConfigured` event inside a database transaction.
 
 ## Self-Registration Flow
 
-A school administrator visits `/sign-up`. The `RegisterUser` Livewire component creates a **stub school** — a minimal school record with no academic structure yet. The administrator is then directed to the `TenantSetupWizard`, a 4-step variant of the same wizard (Steps 1–3 plus review; plan assignment is omitted as it is handled by the Owner later).
+A school administrator visits `/sign-up`. The `RegisterUser` Livewire component creates a **stub school** — a minimal school record with no academic structure yet. The administrator is then directed to the `TenantSetupWizard`, a 4-step variant of the same wizard that covers the same Steps 1–4 (School Data, Geographic Info, Academic Structure, and Plan Selection). The currently authenticated user is assigned the `School Principal` role automatically — no separate Director form is shown.
 
 On completion, `CompleteTenantOnboardingAction` updates the stub school with the wizard data and fires `SchoolConfigured` using the same event pipeline.
 
 ## What Happens on Completion
 
-When `SchoolConfigured` fires, four listeners execute in sequence via Laravel's event discovery (no manual registration in `EventServiceProvider` is needed):
+When `SchoolConfigured` fires, two listener classes handle post-onboarding setup. They are registered via manual `Event::listen` calls (not auto-discovered):
 
-- **`SetupAcademicStructure`** — reads the wizard configuration and creates all `SchoolSection` records for every configured level, grade, cycle, and parallel.
+- **`SetupAcademicStructure`** — reads the wizard configuration and creates all `SchoolSection` records for every configured level, shift, and section label.
 - **`CreateInitialAcademicYear`** — creates the first `AcademicYear` record using the start and end dates provided during the wizard.
-- **`AssignInitialRoles`** — confirms the `School Principal` role assignment for the Director within the tenant scope (`school_id`).
-- **`ChatwootService::syncUserAsAgent()`** — registers the Director as a Chatwoot agent so they can access the messaging center. This call is wrapped in `DB::afterCommit` to ensure it only runs after the outer transaction commits successfully, avoiding nested-transaction callback issues.
+
+In addition, `ChatwootService::syncUserAsAgent()` is called directly inside the action (not via a listener). This call is placed in `DB::afterCommit` to ensure it only runs after the outer transaction commits successfully, avoiding nested-transaction callback issues.
 
 ## School Settings
 

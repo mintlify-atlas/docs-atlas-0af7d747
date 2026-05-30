@@ -1,5 +1,5 @@
 ---
-title: "Academic Module: Students, Teachers, and Courses"
+title: "Academic Module Overview: Students, Teachers & Courses"
 sidebarTitle: "Overview"
 description: "ORVIAN's Academic module manages student enrollment, teacher assignments, and course sections with biometric enrollment and Excel import support."
 ---
@@ -63,7 +63,7 @@ Teachers are linked to sections and subjects via the `teacher_subject_sections` 
 
 `App\Models\Tenant\Academic\SchoolSection` models a single classroom section. Its structure follows the Dominican educational hierarchy:
 
-```
+```text
 Level  →  Grade  →  SchoolSection
 ```
 
@@ -81,14 +81,14 @@ The computed accessor `full_label` assembles the human-readable section name (e.
 
 ### AcademicYear
 
-`App\Models\Tenant\Academic\AcademicYear` defines the active school year for a given school. The active year is resolved automatically based on the current month — no manual year selection is required in forms or wizards. The `TeacherAssignmentService` always operates against the currently active `AcademicYear`.
+`App\Models\Tenant\Academic\AcademicYear` defines the active school year for a given school. The active year is resolved by the `is_active` flag — only one `AcademicYear` per school can be active at a time. No manual year selection is required in forms or wizards. The `TeacherAssignmentService` always operates against the currently active `AcademicYear`.
 
 ## Automatic Account Generation
 
 When a new student is created — either individually through `StudentForm` or in bulk through the `StudentImportWizard` — the `StudentObserver@created` hook automatically provisions a system user account. The observer:
 
 1. Derives the email as `{rnc_clean}@orvian.com.do` (e.g., `40212345678@orvian.com.do`), where `rnc_clean` is the RNC with all hyphens stripped.
-2. Creates a `User` record with a temporary password equal to the cleaned RNC. **The student must change this password on first login.**
+2. Creates a `User` record with a temporary password of `12345678`. **The student must change this password on first login.**
 3. Sets the user's `status` to `inactive`. The account cannot be used until the school Director manually activates it.
 4. Assigns the tenant-scoped `Student` role automatically, using a direct pivot insert to avoid dependency on the global `setPermissionsTeamId()` state (which can be corrupt in queue worker contexts).
 5. Links the new `user_id` back to the student record via `updateQuietly()` to avoid re-triggering the observer.

@@ -1,5 +1,5 @@
 ---
-title: "Teacher Management and Subject Assignments"
+title: "Teacher Management: Profiles and Subject Assignments"
 sidebarTitle: "Teachers"
 description: "Manage teacher profiles, link them to user accounts, and assign them to subjects and sections using ORVIAN's one-click assignment interface."
 ---
@@ -26,7 +26,7 @@ The teacher index is a paginated data table built on ORVIAN's `DataTable` base c
 Each row shows the teacher's name, specialization, employment type, user link status, and an assignment count (loaded via `withCount('assignments')`).
 
 Inline actions from the index:
-- **Terminate** — marks the teacher inactive with a termination date and optional reason. Active assignments for the current academic year are soft-deleted.
+- **Terminate** — marks the teacher inactive with a termination date and optional reason. Active assignments for the current academic year are hard-deleted.
 - **Reactivate** — restores an inactive teacher; clears termination date and reason.
 
 ## Creating a Teacher
@@ -49,7 +49,6 @@ The same `TeacherForm` component handles both creation and editing (at `/app/aca
 | `rnc` | `nullable`, 11–15 chars | National ID number |
 | `date_of_birth` | `nullable`, date | — |
 | `phone` | `nullable`, max 20 | — |
-| `address` | `nullable`, max 500 | — |
 | `specialization` | `nullable`, max 150 | e.g., "Matemáticas", "Lengua Española" |
 | `photo` | `nullable`, image, max 2 MB | Stored at `schools/{schoolId}/teachers/` |
 
@@ -64,11 +63,13 @@ The form includes a **"Create user account"** toggle (`create_user_account`). Wh
 
 On save, if `create_user_account` is `true` and the teacher has no existing `user_id`, a new `User` is created with `status: active` and the `teacher` role is assigned in the school's tenant scope via `setPermissionsTeamId()`. If the teacher already has a linked user, only the name and email are updated (and optionally the password).
 
-### TeacherObserver
+### Automatic Code Generation on Creation
 
-`TeacherService::createTeacher()` is called on new records. It:
-- Generates a unique `qr_code` with the `TCH-` prefix.
-- Auto-generates an `employee_code` using the pattern `EMP-{year}-SC{schoolId}-{seq}`, guaranteed unique.
+The `TeacherObserver@creating` hook fires before a new `Teacher` record is saved. It delegates to `TeacherService` to:
+- Generate a unique `qr_code` with the `TCH-` prefix (e.g., `TCH-ABCDEFGHIJKLMNOPQRSTUVWXYZ12`).
+- Auto-generate an `employee_code` using the pattern `EMP-{year}-SC{schoolId}-{seq}`, guaranteed unique.
+
+`TeacherService::createTeacher()` applies the same logic when called directly, so codes are always set regardless of the creation path.
 
 ## Teacher Profile
 

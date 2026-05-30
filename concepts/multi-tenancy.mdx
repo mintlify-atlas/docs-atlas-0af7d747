@@ -1,7 +1,7 @@
 ---
-title: "Multi-Tenancy in ORVIAN: School Data Isolation"
+title: "ORVIAN Multi-Tenancy: Per-School Data Isolation Layer"
 sidebarTitle: "Multi-Tenancy"
-description: "Each school in ORVIAN is a fully isolated tenant. Learn how SchoolScope, middleware, and model scoping enforce data boundaries."
+description: "Each school in ORVIAN is a fully isolated tenant. Learn how SchoolScope, middleware, and Eloquent model scoping enforce strict data boundaries."
 ---
 
 ORVIAN is a **multi-tenant monolith** in which each school is its own fully isolated tenant. The tenant identifier is `school_id` — a foreign key present on every `Tenant/` model and on the `users` table. Rather than separate databases or schemas, ORVIAN enforces isolation at the query layer using an Eloquent global scope, so every query against tenant data is automatically filtered to the school that owns the active session. Tenant context is resolved once at the middleware layer from the authenticated user and then made available application-wide.
@@ -116,7 +116,7 @@ Route::middleware(['auth', 'verified', 'onboarding.complete', 'school.active'])
     });
 ```
 
-The `IdentifyTenant` middleware (bound as part of the `app` route group) sets the Spatie team ID and resolves the current `School` instance into the service container (`app()->instance('currentSchool', $school)`), making it available anywhere in the request lifecycle.
+The `IdentifyTenant` middleware (appended globally to the `web` middleware stack in `bootstrap/app.php`) sets the Spatie team ID and resolves the current `School` instance into the service container (`app()->instance('currentSchool', $school)`), making it available anywhere in the request lifecycle.
 
 ---
 

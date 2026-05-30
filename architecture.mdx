@@ -75,18 +75,16 @@ Services are organized by domain:
 ### Academic Domain
 | Service | Responsibility |
 |---|---|
-| `StudentService` | CRUD for student records, RNC validation, section assignment |
-| `StudentPhotoService` | Profile photo capture, storage, and cleanup |
+| `StudentService` | CRUD for student records, RNC validation, section assignment, profile photo storage, and QR code generation |
 | `TeacherService` | CRUD for teacher records |
 | `TeacherAssignmentService` | Linking teachers to subjects and sections per academic year (`TeacherSubjectSection`) |
 
 ### Attendance Domain
 | Service | Responsibility |
 |---|---|
-| `PlantelAttendanceService` | Gate-level attendance recording, tardiness calculation against school shift times, session validation |
-| `ClassroomAttendanceService` | Subject-level roll-call, cross-domain consistency enforcement, pasilleo detection |
-| `ExcuseService` | Justification workflow — submission, review, approval, retroactive attendance correction |
-| `DailySessionManager` | Opening and closing `DailyAttendanceSession` records; prevents attendance recording on days without an open session |
+| `PlantelAttendanceService` | Gate-level attendance recording, tardiness calculation against school shift times, and daily session validation |
+| `ClassroomAttendanceService` | Subject-level roll-call, cross-domain consistency enforcement, and pasilleo detection |
+| `ExcuseService` | Justification workflow — submission, review, approval, and retroactive attendance correction |
 
 ### Communications Domain
 | Service | Responsibility |
@@ -104,7 +102,6 @@ Services are organized by domain:
 ### Platform Domain
 | Service | Responsibility |
 |---|---|
-| `SchoolService` | School creation, status management, plan assignment |
 | `SchoolRoleService` | Clones global roles (`school_id = null`) into tenant-scoped roles when a school completes onboarding |
 | `UserAvatarService` | Generates initials-based avatars with automatic hex color assignment from institutional palette |
 
@@ -126,24 +123,23 @@ Key actions in the onboarding flow:
 
 ### Events
 
-After the school and director are created, an event is dispatched:
+After the school is created and its academic structure is confirmed, an event is dispatched:
 
 ```php
 // app/Events/Tenant/SchoolConfigured.php
-event(new SchoolConfigured($school, $director));
+event(new SchoolConfigured($school, $academicData));
 ```
 
-`SchoolConfigured` carries the school and director models. Laravel's event discovery automatically registers all listeners in `app/Listeners/` without manual registration in `EventServiceProvider`.
+`SchoolConfigured` carries the school model and the `$academicData` array (containing `level_ids`, `start_date`, `end_date`, `year_name`, and related wizard data). Laravel's event discovery automatically registers all listeners in `app/Listeners/` without manual registration in `EventServiceProvider`.
 
 ### Listeners
 
-Three listeners respond to `SchoolConfigured`, executing asynchronously via the database queue:
+Two listeners respond to `SchoolConfigured`, executing asynchronously via the database queue:
 
 | Listener | What it does |
 |---|---|
 | `SetupAcademicStructure` | Creates `SchoolSection` records for every active level + grade + parallel combination configured in the wizard |
 | `CreateInitialAcademicYear` | Creates the school's first `AcademicYear` record using the start/end dates collected in the wizard |
-| `AssignInitialRoles` | Confirms the `School Principal` role assignment on the Director user within the tenant scope |
 
 ---
 

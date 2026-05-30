@@ -64,7 +64,6 @@ Preferences are persisted as a JSON object in the `users.preferences` column and
 | Preference Key | Type | Description |
 |----------------|------|-------------|
 | `theme` | `string` | UI theme: `light`, `dark`, or `system`. Applied on page load by the `x-ui.theme-init` synchronous script to prevent any flash of incorrect theme. |
-| `sidebar_collapsed` | `boolean` | Whether the admin panel sidebar starts collapsed. Read from DB on load — no `localStorage` dependency. |
 | `login_version` | `string` | Which login interface to render: `v2` (architectural two-column design) or `v1` (classic layout). Synced as a browser cookie on save. |
 | `audio_feedback` | `boolean` | Whether attendance registration beeps are enabled (applies to QR and facial recognition kiosk modes). Default: `true`. |
 

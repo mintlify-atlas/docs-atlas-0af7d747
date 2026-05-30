@@ -1,7 +1,7 @@
 ---
-title: "WhatsApp and Chatwoot Communications Setup"
+title: "WhatsApp Alerts and Chatwoot Messaging Integration"
 sidebarTitle: "WhatsApp & Chatwoot"
-description: "Connect ORVIAN to Evolution API for WhatsApp attendance alerts and Chatwoot for school messaging. Configure environment variables and test the integrations."
+description: "Set up Evolution API for WhatsApp alerts and Chatwoot for school messaging in ORVIAN. Configure environment variables and test the integrations."
 ---
 
 ORVIAN's Communications module integrates two external services: **Evolution API** (WhatsApp) for automated attendance alerts sent to student tutors, and **Chatwoot** for a web-based messaging center accessible by school directors. Both services are optional and configured entirely through environment variables — neither requires code changes to enable or disable.
@@ -12,7 +12,7 @@ WhatsApp messaging in ORVIAN is handled by `WhatsAppService` (`app/Services/Comm
 
 - **Sender-only** — ORVIAN dispatches WhatsApp messages but does **not** process or listen for incoming messages. There are no webhooks or inbound message handlers.
 - **Asynchronous delivery** — all message sending happens through `SendAttendanceAlertJob`, a queued job with **3 retries** and a **60-second backoff**. This ensures a failed Evolution API call never blocks the web request or delays attendance recording.
-- **Anti-spam cache** — `AttendanceAlertEvaluator` protects against alert flooding with a weekly cache key per student per alert type (`alert_{type}_{student_id}_{weekOfYear}`, TTL 7 days). A tutor receives at most one absence alert and one tardiness alert per calendar week, regardless of how many times the evaluator runs.
+- **Anti-spam cache** — `AttendanceAlertEvaluator` protects against alert flooding with a weekly cache key per student per alert type (e.g., `alert_absence_{student_id}_{weekOfYear}` and `alert_tardiness_{student_id}_{weekOfYear}`, TTL 7 days). A tutor receives at most one absence alert and one tardiness alert per calendar week, regardless of how many times the evaluator runs.
 - **Phone normalization** — Evolution API expects the phone number without the leading `+`. `WhatsAppService::sendTextMessage()` strips it automatically: `$normalizedPhone = ltrim($phone, '+')`.
 
 ## Setting Up Evolution API
@@ -40,11 +40,13 @@ WhatsApp messaging in ORVIAN is handled by `WhatsAppService` (`app/Services/Comm
     ```
   </Step>
   <Step title="Test the integration">
-    Run the demo command to fire test alerts for all schools:
+    Run the demo command to force-fire test alerts for a specific school (pass the school ID as an argument):
 
     ```bash
-    php artisan orvian:demo-fire-attendance-alerts
+    php artisan orvian:demo-fire-alerts 1
     ```
+
+    Replace `1` with your actual school ID. The command clears the anti-spam cache for that school's students and immediately re-evaluates them, so alerts are dispatched even if they were already sent this week.
 
     Check Laravel logs (`storage/logs/laravel.log`) for `WhatsAppService: Mensaje enviado` entries confirming successful delivery, or `WhatsAppService: Respuesta no exitosa` with the Evolution API status code if something is misconfigured.
   </Step>
@@ -176,7 +178,7 @@ DB::afterCommit(function () use ($user, $chatwoot) {
 1. Calls `findAgentByEmail()` to check whether the Director already exists as an agent (prevents duplicates on re-runs).
 2. If not found, calls `createAgent()` with the Director's `name`, `email`, and `role: 'agent'`.
 3. On success, stores the Chatwoot agent ID in `users.preferences['chatwoot_agent_id']` for future reference.
-4. `createAgent()` **logs the full HTTP response body** (status + body) regardless of success or failure — this was added specifically to catch silent 4xx responses that Chatwoot returns for malformed email addresses without raising an HTTP error.
+4. Any exception thrown during the entire sync flow is caught by a `try/catch` block and written to the Laravel log as a `ChatwootService: Error en sincronización` error entry — preventing a failed Chatwoot sync from rolling back the onboarding transaction.
 
 <Note>
   The `communications` module tile must have `visible: true` in `config/modules.php` for the **Messages** link to appear on the school dashboard. This is `true` by default as of v0.5.0. In earlier versions (v0.4.0–v0.4.1), the tile was set to `visible: false` and the module was listed as coming soon.
@@ -203,7 +205,7 @@ DB::afterCommit(function () use ($user, $chatwoot) {
 
   <Accordion title="No agents in Chatwoot after onboarding">
     1. Check `storage/logs/laravel.log` for `ChatwootService: Error en sincronización` entries — these will contain the exception message.
-    2. Search for log lines from `createAgent` that include the HTTP status and response body. A `422 Unprocessable Entity` typically means the email format is invalid or already taken in Chatwoot under a different account.
+    2. Check the Chatwoot admin panel directly for the agent. The `syncUserAsAgent()` call only logs a success message (`ChatwootService: Agente creado exitosamente`) or an exception — it does not log the raw HTTP response body. A `422 Unprocessable Entity` from the Chatwoot API typically means the email is already taken under a different account.
     3. If the agent was partially created, use the Chatwoot admin panel to delete the duplicate and re-trigger sync by re-running the onboarding action, or call `ChatwootService::syncUserAsAgent($user)` manually in a Tinker session.
     4. Confirm `CHATWOOT_API_ACCESS_TOKEN` belongs to a **Superadmin** account — agent creation requires Superadmin privileges.
   </Accordion>

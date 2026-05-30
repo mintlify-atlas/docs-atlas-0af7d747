@@ -90,8 +90,8 @@ php artisan orvian:evaluate-attendance-alerts
 # Evaluate a specific school
 php artisan orvian:evaluate-attendance-alerts --school=1
 
-# Test fire (demo data seeder)
-php artisan orvian:demo-fire-attendance-alerts
+# Test fire for a specific school (bypasses anti-spam cache)
+php artisan orvian:demo-fire-alerts {school_id}
 ```
 
 The command displays a progress bar as it iterates over active students and prints a warning summary at the end if any students were skipped due to missing phone numbers.

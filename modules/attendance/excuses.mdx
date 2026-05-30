@@ -4,10 +4,10 @@ sidebarTitle: "Excuses"
 description: "ORVIAN's excuse workflow lets coordinators review, approve, or reject absence justifications. Approved excuses retroactively update attendance records."
 ---
 
-The Excuse module provides a structured workflow for absence justifications submitted on behalf of students. When a coordinator approves an excuse, `ExcuseService` immediately applies it retroactively: every `PlantelAttendanceRecord` and `ClassroomAttendanceRecord` that falls within the excuse's date range for that student is updated to `excused` status. This retroactive update ensures that already-closed sessions and teacher roll calls reflect the correct justified status without requiring manual corrections across multiple records.
+The Excuse module provides a structured workflow for absence justifications submitted on behalf of students. When a coordinator approves an excuse, `ExcuseService` immediately applies it retroactively: any `PlantelAttendanceRecord` or `ClassroomAttendanceRecord` with `status = 'absent'` that falls within the excuse's date range for that student is updated to `excused` status. Records already marked `present`, `late`, or `excused` are not touched. This retroactive update ensures that already-closed sessions and teacher roll calls reflect the correct justified status without requiring manual corrections across multiple records.
 
 <Note>
-  The `AttendanceExcuseObserver` listens for state transitions on the `AttendanceExcuse` model and fires domain events accordingly. This is the integration point used by notification listeners (e.g. WhatsApp alert suppression) and any future webhook subscribers.
+  The `AttendanceExcuseObserver` listens for the `updated` event on the `AttendanceExcuse` model and directly applies retroactive database updates when the status transitions to `approved`. It runs inside a `DB::transaction` to ensure consistency across Plantel and classroom records.
 </Note>
 
 ---
@@ -85,15 +85,16 @@ The interface also exposes a **submission panel** (slide-over form) for creating
 
 ## Retroactive Marking
 
-When `ExcuseService::approveExcuse()` is called (triggered from `ExcuseIndex::approve()`), the `AttendanceExcuseObserver` reacts to the model's `updated` event and initiates retroactive marking:
+When `ExcuseService::approveExcuse()` is called (triggered from `ExcuseIndex::approve()`), the `AttendanceExcuseObserver` reacts to the model's `updated` event (specifically when `status` changes to `approved`) and initiates retroactive marking:
 
 **Plantel records:** The observer finds all `PlantelAttendanceRecord` entries where:
 - `student_id` matches the excuse's student
+- `status = 'absent'` (only absent records are updated — `present`, `late`, and already-`excused` records are left untouched)
 - `date` falls within `[date_start, date_end]`
 
-Each matching record is updated to `status = 'excused'`.
+Each matching record is updated to `status = 'excused'`, with a note appended to the `notes` column referencing the excuse ID.
 
-**Classroom records:** The same date-range query is applied to `ClassroomAttendanceRecord` — all per-subject records for the student within the excuse window are updated to `status = 'excused'`.
+**Classroom records:** The same targeted query is applied to `ClassroomAttendanceRecord` — only per-subject records with `status = 'absent'` for the student within the excuse window are updated to `status = 'excused'`, with the excuse ID appended to `teacher_notes`.
 
 The retroactive update runs synchronously inside the observer to ensure data consistency is immediate. For date ranges spanning more than a few days, this may take a brief moment; the coordinator sees a success notification once the process completes.
 

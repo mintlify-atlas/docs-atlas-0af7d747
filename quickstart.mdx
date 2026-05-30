@@ -82,10 +82,11 @@ This quickstart walks you through spinning up a complete ORVIAN development envi
     This single command runs the following sequence automatically:
 
     1. **`composer install`** — downloads all PHP dependencies from `vendor/`
-    2. **`php artisan key:generate`** — writes `APP_KEY` into your `.env`
-    3. **`php artisan migrate --force`** — creates all database tables (SQLite file is created if missing)
-    4. **`npm install`** — installs all Node packages including Vite, Tailwind, and Alpine.js
-    5. **`npm run build`** — compiles and fingerprints all frontend assets into `public/build/`
+    2. **`php -r "file_exists('.env') || copy('.env.example', '.env');"`** — copies `.env.example` to `.env` if no `.env` file exists yet
+    3. **`php artisan key:generate`** — writes `APP_KEY` into your `.env`
+    4. **`php artisan migrate --force`** — creates all database tables (SQLite file is created if missing)
+    5. **`npm install`** — installs all Node packages including Vite, Tailwind, and Alpine.js
+    6. **`npm run build`** — compiles and fingerprints all frontend assets into `public/build/`
 
     The command takes approximately 60–90 seconds on a first run. Once it completes, the application is fully seeded with the Owner account structure and is ready to serve requests.
   </Step>

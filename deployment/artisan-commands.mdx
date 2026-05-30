@@ -1,5 +1,5 @@
 ---
-title: "ORVIAN Artisan Commands Reference"
+title: "ORVIAN Custom Artisan Commands: Complete Reference"
 sidebarTitle: "Artisan Commands"
 description: "Reference for all custom php artisan commands in ORVIAN: demo seeding, geo data import, alert evaluation, and user status management."
 ---
@@ -218,6 +218,38 @@ Schedule::command('orvian:update-user-status')->everyFiveMinutes();
 ```bash
 php artisan orvian:update-user-status
 ```
+
+---
+
+## `orvian:demo-fire-alerts`
+
+**Class:** `App\\Console\\Commands\\DemoFireAttendanceAlertsCommand`
+
+A **development and demo tool** that bypasses the weekly anti-spam cache and forces immediate alert evaluation for all active students in a given school. It reconstructs and deletes the same cache keys that `AttendanceAlertEvaluator` writes (`alert_absence_{student_id}_{weekOfYear}` and `alert_tardiness_{student_id}_{weekOfYear}`), then evaluates each student as if no alert had ever been sent. This makes it easy to test the full WhatsApp notification pipeline without waiting for the cache to expire.
+
+<Warning>
+This command is intended for demos and integration testing only. Running it against a school with real students will send WhatsApp messages to actual tutor phone numbers. Do not run it in production without confirming the connected WhatsApp instance is a test number.
+</Warning>
+
+**Signature:**
+```
+php artisan orvian:demo-fire-alerts {school}
+```
+
+| Argument | Type | Description |
+|---|---|---|
+| `school` | integer | ID of the school whose students should be evaluated. Required. |
+
+*(No options.)*
+
+**Usage:**
+
+```bash
+# Force-fire alerts for school ID 1
+php artisan orvian:demo-fire-alerts 1
+```
+
+After execution, the command prints a progress bar and reports how many students were skipped due to a missing `tutor_phone`. Students who meet the absence or tardiness threshold will have `SendAttendanceAlertJob` dispatched to the queue immediately.
 
 ---
 

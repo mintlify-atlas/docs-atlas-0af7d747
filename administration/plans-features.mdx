@@ -32,7 +32,7 @@ Each plan has the following fields:
 Plans with schools assigned to them cannot be deleted. Attempting to do so returns a validation error.
 
 <Note>
-  The `Plan` model exposes a `canAccess()` helper method that you can use in controllers or services to check whether a given school's plan grants access to a specific capability. For feature-flag checks scoped to a school instance, use `School::hasFeature(string $slug)` instead (see the Feature Matrix section below). Use `canAccess()` when you have direct access to the `Plan` model and need a quick boolean gate without loading the school relationship.
+  The `Plan` model exposes a `hasFeature(string $slug)` helper method that checks whether a specific feature slug is present in the plan's feature collection. For feature-flag checks scoped to a school instance, use `School::hasFeature(string $slug)` instead (see the Feature Matrix section below) — it delegates to the plan's own `hasFeature()` method through the school's current plan relationship.
 </Note>
 
 ## Feature Matrix
@@ -102,7 +102,7 @@ The school detail view at `/admin/schools/{school}` (`SchoolShow`) displays the 
 
 The Owner dashboard at `/admin/hub` is rendered by `StatsOverview` (`App\Livewire\Admin\Dashboard\StatsOverview`). It computes and displays:
 
-- **MRR (Monthly Recurring Revenue)** — sum of plan prices for all active, non-suspended schools.
+- **MRR (Monthly Recurring Revenue)** — sum of plan prices for all active schools (`is_active = true`).
 - **Active school count** — schools where `is_active = true`.
 - **Inactive school count** — total minus active.
 - **Total user count** — platform-wide user count.
