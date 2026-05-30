@@ -1,0 +1,111 @@
+---
+title: "Academic Module: Students, Teachers, and Courses"
+sidebarTitle: "Overview"
+description: "ORVIAN's Academic module manages student enrollment, teacher assignments, and course sections with biometric enrollment and Excel import support."
+---
+
+The Academic module is the organizational backbone of ORVIAN. It handles the core educational entities — students, teachers, courses/sections, and subjects — and enforces the relationships between them. It integrates directly with the Attendance module through `TeacherSubjectSection` assignments, which determine which sections and subjects appear in each teacher's classroom roll call.
+
+## Module Routes
+
+All routes live under the `/app/academic/` prefix and the `app.academic.*` named route group. They are registered in `routes/app/academic.php`.
+
+| Path | Route Name | Permission Required |
+|------|-----------|---------------------|
+| `GET /app/academic/students` | `app.academic.students.index` | `students.view` |
+| `GET /app/academic/students/create` | `app.academic.students.create` | `students.view` + `students.create` |
+| `GET /app/academic/students/import` | `app.academic.students.import` | `students.view` + `students.import` |
+| `GET /app/academic/students/print-manager` | `app.academic.students.print-manager` | `students.view` + `students.import` |
+| `GET /app/academic/students/print-qr-sheet` | `app.academic.students.print-qr-sheet` | `students.view` + `students.import` |
+| `GET /app/academic/students/{student}/edit` | `app.academic.students.edit` | `students.view` + `students.edit` |
+| `GET /app/academic/students/{student}` | `app.academic.students.show` | `students.view` |
+| `GET /app/academic/teachers` | `app.academic.teachers.index` | `teachers.view` |
+| `GET /app/academic/teachers/create` | `app.academic.teachers.create` | `teachers.view` + `teachers.create` |
+| `GET /app/academic/teachers/{teacher}/assignments` | `app.academic.teachers.assignments` | `teachers.view` + `teachers.assign_subjects` |
+| `GET /app/academic/teachers/{teacher}/edit` | `app.academic.teachers.edit` | `teachers.view` + `teachers.edit` |
+| `GET /app/academic/teachers/{teacher}` | `app.academic.teachers.show` | `teachers.view` |
+| `GET /app/academic/courses` | `app.academic.courses.index` | `settings.view` or `settings.update` |
+| `GET /app/academic/courses/create` | `app.academic.courses.create` | `settings.view` or `settings.update` |
+| `GET /app/academic/courses/{section}` | `app.academic.courses.show` | `settings.view` or `settings.update` |
+| `GET /app/academic/enrollment-hub` | `app.academic.enrollment-hub` | `students.edit` |
+| `GET /app/academic/biometric-kiosk` | `app.academic.biometric-kiosk` | `students.edit` |
+
+## Academic Data Model
+
+The Academic module is built around five key entities and the relationships between them.
+
+### Student
+
+`App\Models\Tenant\Student` represents a student enrolled in (or awaiting enrollment at) the school. Key attributes:
+
+- **`school_section_id`** — Foreign key to `SchoolSection`. `null` means the student is in the "Sala de Espera" (waiting room), pending assignment.
+- **`rnc`** — National ID number (cédula). Unique per school. Used to derive the student's system email.
+- **`qr_code`** — Auto-generated 32-character uppercase token on creation via `StudentObserver@creating`. Used for QR wristbands and attendance scanning.
+- **`face_encoding`** — Optional. Stored as a JSON array of 128 floats produced by the `orvian-facial-recognition` Python microservice. Enables facial attendance recognition.
+- **`tutor_name` / `tutor_phone`** — Guardian contact data. `tutor_phone` is stored in E.164 format for WhatsApp alert delivery.
+- **`metadata`** — JSON column storing SIGERD-origin data (`sigerd_section`), section transfer history, and waiting-room assignment timestamps.
+
+The model uses `SoftDeletes`. The `full_name`, `age`, `has_face_encoding`, `has_user_account`, and `full_section_name` attributes are computed via Eloquent accessors.
+
+### Teacher
+
+`App\Models\Tenant\Teacher` represents a teaching staff member as a first-class professional entity, distinct from any system user account. Key attributes:
+
+- **`specialization`** — The teacher's academic specialization (e.g., "Matemáticas", "Lengua Española").
+- **`employment_type`** — `Full-Time`, `Part-Time`, or `Substitute`.
+- **`user_id`** — Optional FK to `User`. If set, the teacher has a system login. If null, the teacher exists in the academic record only.
+- **`employee_code`** — Auto-generated on creation using the pattern `EMP-{year}-SC{schoolId}-{seq}`.
+- **`qr_code`** — Auto-generated with the prefix `TCH-` on creation.
+
+Teachers are linked to sections and subjects via the `teacher_subject_sections` pivot table (`TeacherSubjectSection`). The `assignments()` relation exposes these records; the `subjects()` relation provides the many-to-many shortcut.
+
+### SchoolSection
+
+`App\Models\Tenant\Academic\SchoolSection` models a single classroom section. Its structure follows the Dominican educational hierarchy:
+
+```
+Level  →  Grade  →  SchoolSection
+```
+
+- **`grade_id`** — Links to a `Grade`, which belongs to a `Level` (e.g., Primaria, Secundaria).
+- **`label`** — The parallel letter (A, B, C, etc.).
+- **`school_shift_id`** — Links to a `SchoolShift` (Matutina, Vespertina, etc.).
+- **`technical_title_id`** — Nullable FK. When set, the section belongs to a technical specialization track (bachillerato técnico).
+- **`is_active`** — Sections can be deactivated without deletion. Soft-deleted sections are excluded from all public queries.
+
+The computed accessor `full_label` assembles the human-readable section name (e.g., `"3ro Secundaria - A (Informática) [Matutina]"`), dynamically showing the shift only when the school has more than one shift registered.
+
+### Subject
+
+`App\Models\Tenant\Academic\Subject` is seeded from the MINERD official catalog via `SubjectSeeder`. Subjects have a `type` (`basic` or `technical`) and a `color` used for visual coding in the assignment UI. Subjects are assigned to sections via teachers using `TeacherSubjectSection`.
+
+### AcademicYear
+
+`App\Models\Tenant\Academic\AcademicYear` defines the active school year for a given school. The active year is resolved automatically based on the current month — no manual year selection is required in forms or wizards. The `TeacherAssignmentService` always operates against the currently active `AcademicYear`.
+
+## Automatic Account Generation
+
+When a new student is created — either individually through `StudentForm` or in bulk through the `StudentImportWizard` — the `StudentObserver@created` hook automatically provisions a system user account. The observer:
+
+1. Derives the email as `{rnc_clean}@orvian.com.do` (e.g., `40212345678@orvian.com.do`), where `rnc_clean` is the RNC with all hyphens stripped.
+2. Creates a `User` record with a temporary password equal to the cleaned RNC. **The student must change this password on first login.**
+3. Sets the user's `status` to `inactive`. The account cannot be used until the school Director manually activates it.
+4. Assigns the tenant-scoped `Student` role automatically, using a direct pivot insert to avoid dependency on the global `setPermissionsTeamId()` state (which can be corrupt in queue worker contexts).
+5. Links the new `user_id` back to the student record via `updateQuietly()` to avoid re-triggering the observer.
+
+A guard prevents duplicate account creation: if a `User` with the derived email already exists, the observer exits without action.
+
+<CardGroup cols={2}>
+  <Card title="Students" icon="user-graduate" href="/modules/academic/students">
+    Manage student records, bulk import from SIGERD, assign sections, and enroll in biometric facial recognition.
+  </Card>
+  <Card title="Teachers" icon="chalkboard-teacher" href="/modules/academic/teachers">
+    Create teacher profiles, link system accounts, and assign subjects and sections with one-click assignments.
+  </Card>
+  <Card title="Courses" icon="school" href="/modules/academic/courses">
+    Configure grade levels, sections, shifts, and technical specialization tracks using the CourseForm wizard.
+  </Card>
+  <Card title="Enrollment Hub" icon="door-open" href="/modules/academic/students#enrollment-hub-sala-de-espera">
+    Assign waiting-room students to sections individually or in bulk by their SIGERD section of origin.
+  </Card>
+</CardGroup>

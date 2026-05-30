@@ -1,0 +1,131 @@
+---
+title: "Teacher Management and Subject Assignments"
+sidebarTitle: "Teachers"
+description: "Manage teacher profiles, link them to user accounts, and assign them to subjects and sections using ORVIAN's one-click assignment interface."
+---
+
+ORVIAN manages teachers as first-class entities that are separate from system user accounts. A **teacher profile** holds professional and biographical data (name, RNC, specialization, employment type, hire date) while an optional linked `User` account provides login access to the platform. This separation allows schools to maintain a complete staff roster in ORVIAN even before issuing system credentials to every teacher.
+
+Subject-section assignments — stored in the `teacher_subject_sections` pivot table as `TeacherSubjectSection` records — are the source of truth for which sections and subjects appear in each teacher's attendance roll call.
+
+## Teacher Index
+
+**Component:** `TeacherIndex` (`App\Livewire\App\Academic\Teachers\TeacherIndex`)  
+**Route:** `GET /app/academic/teachers`  
+**Permission:** `teachers.view`
+
+The teacher index is a paginated data table built on ORVIAN's `DataTable` base class with URL-bound filters:
+
+| Filter | Type | Description |
+|--------|------|-------------|
+| `search` | Text | Full-name free-text search |
+| `status` | Select | Active or inactive teachers |
+| `employment_type` | Select | `Full-Time` or `Part-Time` |
+| `has_user` | Toggle | Show only teachers linked to a system account (default: `true`) |
+
+Each row shows the teacher's name, specialization, employment type, user link status, and an assignment count (loaded via `withCount('assignments')`).
+
+Inline actions from the index:
+- **Terminate** — marks the teacher inactive with a termination date and optional reason. Active assignments for the current academic year are soft-deleted.
+- **Reactivate** — restores an inactive teacher; clears termination date and reason.
+
+## Creating a Teacher
+
+**Component:** `TeacherForm` (`App\Livewire\App\Academic\Teachers\TeacherForm`)  
+**Route:** `GET /app/academic/teachers/create`  
+**Permission:** `teachers.create`
+
+The same `TeacherForm` component handles both creation and editing (at `/app/academic/teachers/{teacher}/edit`, requiring `teachers.edit`).
+
+### Personal and Professional Data
+
+| Field | Validation | Notes |
+|-------|-----------|-------|
+| `first_name` | `required`, max 100 | — |
+| `last_name` | `required`, max 100 | — |
+| `gender` | `required`, `M` or `F` | — |
+| `employment_type` | `required` | `Full-Time`, `Part-Time`, or `Substitute` |
+| `hire_date` | `required`, date | Defaults to today on creation |
+| `rnc` | `nullable`, 11–15 chars | National ID number |
+| `date_of_birth` | `nullable`, date | — |
+| `phone` | `nullable`, max 20 | — |
+| `address` | `nullable`, max 500 | — |
+| `specialization` | `nullable`, max 150 | e.g., "Matemáticas", "Lengua Española" |
+| `photo` | `nullable`, image, max 2 MB | Stored at `schools/{schoolId}/teachers/` |
+
+### Optional System Account
+
+The form includes a **"Create user account"** toggle (`create_user_account`). When enabled, additional fields appear:
+
+| Field | Validation (when enabled) |
+|-------|--------------------------|
+| `email` | `required`, valid email, unique in `users` |
+| `password` | `required` on create, `nullable` on edit (leave blank to keep current) |
+
+On save, if `create_user_account` is `true` and the teacher has no existing `user_id`, a new `User` is created with `status: active` and the `teacher` role is assigned in the school's tenant scope via `setPermissionsTeamId()`. If the teacher already has a linked user, only the name and email are updated (and optionally the password).
+
+### TeacherObserver
+
+`TeacherService::createTeacher()` is called on new records. It:
+- Generates a unique `qr_code` with the `TCH-` prefix.
+- Auto-generates an `employee_code` using the pattern `EMP-{year}-SC{schoolId}-{seq}`, guaranteed unique.
+
+## Teacher Profile
+
+**Component:** `TeacherShow` (`App\Livewire\App\Academic\Teachers\TeacherShow`)  
+**Route:** `GET /app/academic/teachers/{teacher}`  
+**Permission:** `teachers.view`
+
+The teacher profile page displays:
+- **Personal data tab**: biographical and contact information, employment type, hire date, and system account status.
+- **Subject assignments tab**: all `TeacherSubjectSection` records for this teacher, grouped by section with subject color coding.
+- **Attendance history widget**: historical classroom attendance records linked to this teacher's assignments.
+
+## Subject-Section Assignments
+
+**Component:** `TeacherAssignments` (`App\Livewire\App\Academic\Teachers\TeacherAssignments`)  
+**Route:** `GET /app/academic/teachers/{teacher}/assignments`  
+**Permission:** `teachers.assign_subjects`
+
+The assignments interface is a **two-panel dashboard layout** designed for efficient management of large subject catalogues.
+
+### Left Panel — Section Selector
+
+Displays all active sections for the school, sortable by grade name and parallel letter. Supports:
+- **Search** by section label, grade name, or technical title name (`searchSection`).
+- **Shift filter** (`filterShiftId`) to narrow to a specific tanda.
+
+Clicking a section sets `activeSectionId`, which drives the right panel.
+
+### Right Panel — Subject Grid
+
+Displays all subjects available to the school, filtered by `searchSubject` (name or code). Subjects are split into two tabs:
+- **Basic subjects** (`type = 'basic'`)
+- **Technical subjects** (`type = 'technical'`)
+
+Each subject card is styled using the **institutional subject color** (`subject.color`). An `is_assigned` flag on each subject indicates whether the teacher is already assigned to that subject in the active section.
+
+**One-click assignment**: clicking a subject card calls `toggleSubject(subjectId)`, which:
+- If not assigned → calls `TeacherAssignmentService::assign()`, creating a `TeacherSubjectSection` record scoped to the active `AcademicYear`.
+- If already assigned → calls `TeacherAssignmentService::remove()`. If the assignment has associated classroom attendance records, it is **deactivated** (`is_active = false`) rather than deleted to preserve historical data. If no attendance records exist, it is hard-deleted.
+
+There is no confirmation dialog — the visual state of the card provides immediate feedback.
+
+## How Assignments Affect Attendance
+
+The `teacher_subject_sections` table (`TeacherSubjectSection`) is the **join table that drives classroom roll call**. When a teacher opens the classroom attendance component (`ClassroomAttendanceLive`), ORVIAN queries `TeacherSubjectSection` to determine:
+
+- Which sections the teacher is authorized to take attendance for.
+- Which subjects appear in each section's roll call.
+- Which academic year the records are scoped to.
+
+A teacher who has no `TeacherSubjectSection` records will see an empty attendance panel. Removing an assignment (when no attendance records exist) immediately removes that section/subject pairing from the teacher's roll call on the next request.
+
+## Required Permissions
+
+| Permission | Grants Access To |
+|-----------|-----------------|
+| `teachers.view` | Teacher index, teacher profile, and all teacher routes |
+| `teachers.create` | Create new teacher profiles |
+| `teachers.edit` | Edit existing teacher profiles |
+| `teachers.assign_subjects` | View and modify subject-section assignments |

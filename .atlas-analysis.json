@@ -1,0 +1,138 @@
+{
+  "projectType": "saas",
+  "projectName": "ORVIAN",
+  "projectDescription": "ORVIAN is a modular, multi-tenant school management platform built on Laravel that automates attendance tracking, academic administration, grade management, and communications for Dominican educational institutions.",
+  "theme": "almond",
+  "primaryColor": "#E8611A",
+  "lightColor": "#F5A571",
+  "darkColor": "#1A2744",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/multi-tenancy",
+              "concepts/roles-permissions",
+              "concepts/modules"
+            ]
+          },
+          {
+            "group": "Attendance Module",
+            "pages": [
+              "modules/attendance/overview",
+              "modules/attendance/daily-sessions",
+              "modules/attendance/recording-methods",
+              "modules/attendance/classroom-attendance",
+              "modules/attendance/excuses"
+            ]
+          },
+          {
+            "group": "Academic Module",
+            "pages": [
+              "modules/academic/overview",
+              "modules/academic/students",
+              "modules/academic/teachers",
+              "modules/academic/courses"
+            ]
+          },
+          {
+            "group": "Administration",
+            "pages": [
+              "administration/school-setup",
+              "administration/user-management",
+              "administration/plans-features",
+              "administration/communications"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment & Integrations",
+        "groups": [
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/configuration",
+              "deployment/artisan-commands"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/facial-recognition",
+              "integrations/whatsapp-chatwoot"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multi-tenant architecture: each school operates in full isolation",
+    "Dual attendance tracking: campus-level (Plantel) and classroom-level with cross-validation",
+    "Three attendance recording methods: facial recognition, QR code bracelet, and manual roll call",
+    "Optional biometric integration via an independent Python/FastAPI microservice",
+    "Role-based access control powered by Spatie Permissions with per-tenant role cloning",
+    "Academic management: students, teachers, sections, subjects, and enrollment wizard",
+    "WhatsApp alerts for absences and tardiness via Evolution API",
+    "Chatwoot SSO integration for an internal messaging center",
+    "Excel/PDF import and export for student data, grades, and attendance reports",
+    "Laravel Pulse observability dashboard and OPcodes Log Viewer",
+    "Progressive onboarding wizard for new schools (Owner and self-registration flows)",
+    "Demo data seeder command (orvian:seed-demo) for evaluation environments",
+    "Offline-ready architecture with sync columns prepared for future edge-node deployment"
+  ],
+  "publicApiSurface": [
+    "GET  /app/attendance/dashboard",
+    "GET  /app/attendance/scanner",
+    "GET  /app/attendance/hub",
+    "GET  /app/attendance/session",
+    "GET  /app/attendance/manual",
+    "GET  /app/attendance/plantel/history",
+    "GET  /app/attendance/classroom",
+    "GET  /app/attendance/classroom/history",
+    "GET  /app/attendance/audit/{sessionId}",
+    "GET  /app/attendance/excuses",
+    "GET  /app/attendance/reports",
+    "GET  /app/academic/students",
+    "GET  /app/academic/students/create",
+    "GET  /app/academic/students/{student}",
+    "GET  /app/academic/students/{student}/edit",
+    "GET  /app/academic/students/import",
+    "GET  /app/academic/students/print-manager",
+    "GET  /app/academic/teachers",
+    "GET  /app/academic/teachers/{teacher}",
+    "GET  /app/academic/teachers/{teacher}/assignments",
+    "GET  /app/academic/courses",
+    "GET  /app/academic/enrollment-hub",
+    "GET  /app/academic/biometric-kiosk",
+    "GET  /admin/hub",
+    "GET  /admin/schools",
+    "GET  /admin/schools/{school}",
+    "GET  /admin/users",
+    "GET  /admin/roles",
+    "GET  /admin/plans",
+    "GET  /admin/pulse",
+    "GET  /admin/logs",
+    "php artisan orvian:seed-demo",
+    "php artisan orvian:evaluate-attendance-alerts",
+    "php artisan orvian:cleanup-stubs",
+    "php artisan orvian:import-geo",
+    "php artisan orvian:import-educational-geo",
+    "composer setup",
+    "composer dev",
+    "composer test"
+  ]
+}

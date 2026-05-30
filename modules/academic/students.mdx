@@ -1,0 +1,201 @@
+---
+title: "Student Management: Enrollment, Import, and Biometrics"
+sidebarTitle: "Students"
+description: "Create, import, and manage student records in ORVIAN. Bulk-import from SIGERD Excel files and enroll students in biometric facial recognition."
+---
+
+ORVIAN provides a complete student lifecycle: individual creation via form, bulk Excel import from SIGERD, automatic QR code generation, optional biometric facial enrollment, and section assignment through the Enrollment Hub. Every student record is automatically backed by a system user account the moment the record is created.
+
+## Student Index
+
+**Component:** `StudentIndex` (`App\Livewire\App\Academic\Students\StudentIndex`)  
+**Route:** `GET /app/academic/students`  
+**Permission:** `students.view`
+
+The student index is a paginated data table built on ORVIAN's `DataTable` base class. It supports the following URL-bound filters:
+
+| Filter | Type | Description |
+|--------|------|-------------|
+| `search` | Text | Full-name or RNC free-text search |
+| `school_section_id` | Select | Filter by a specific section |
+| `status` | Select | `active` or `inactive` |
+| `gender` | Select | `M` (Masculino) or `F` (Femenino) |
+| `has_photo` | Toggle | Show only students with a profile photo |
+| `has_face_encoding` | Toggle | Show only students enrolled in biometrics |
+
+Active filters are rendered as dismissible chips for quick removal. Clicking a student row opens a **slide-over preview panel** (rendered via `@teleport('body')`) showing the student's photo, section, and key stats without navigating away. The index also surfaces a **student quota widget** that compares active student count against the school plan's `limit_students`.
+
+Inline actions from the index include:
+- **Withdraw** — marks the student inactive with a withdrawal date and optional reason.
+- **Reactivate** — re-enrolls the student; blocked if the school plan quota is already at its limit.
+- **Show QR** — opens a modal displaying the student's QR code.
+
+## Creating a Student
+
+**Component:** `StudentForm` (`App\Livewire\App\Academic\Students\StudentForm`)  
+**Route:** `GET /app/academic/students/create`  
+**Permission:** `students.create`
+
+The same `StudentForm` component handles both creation and editing (at `/app/academic/students/{student}/edit`, requiring `students.edit`).
+
+### Required Fields
+
+| Field | Validation | Notes |
+|-------|-----------|-------|
+| `first_name` | `required`, max 100 | — |
+| `last_name` | `required`, max 100 | — |
+| `school_section_id` | `required`, must exist | Section must exist in `school_sections` |
+| `gender` | `required`, `M` or `F` | — |
+| `rnc` | `required`, 11–15 chars | Must be unique per school |
+
+### Optional Fields
+
+| Field | Validation | Notes |
+|-------|-----------|-------|
+| `date_of_birth` | `nullable`, date | — |
+| `photo` | `nullable`, image, max 2 MB | Triggers face encoding on save |
+| `tutor_name` | `nullable`, max 120 | Guardian name |
+| `tutor_phone` | `nullable`, E.164 regex | Must match `+[1-9]\d{7,14}` for WhatsApp |
+| `blood_type` | `nullable` | — |
+| `allergies` | `nullable` | — |
+| `medical_notes` | `nullable` | — |
+| `is_active` | boolean | Defaults to `true` |
+
+### Email Auto-Calculation
+
+The student's system email is **automatically calculated from the RNC** and is read-only in the form. As the user types the RNC, the `updatedRnc()` hook fires:
+
+```php
+public function updatedRnc(): void
+{
+    if (!$this->isEdit) {
+        $clean = preg_replace('/[^0-9]/', '', $this->rnc ?? '');
+        $this->email = $clean ? $clean . '@orvian.com.do' : '';
+    }
+}
+```
+
+In edit mode the email is immutable — it was set by `StudentObserver@created` at creation time and cannot be changed through the form.
+
+If a photo is uploaded, `StudentService::updatePhoto()` stores it and then `FaceEncodingManager::enrollStudent()` is called **outside the database transaction** to avoid blocking the save if the facial recognition microservice is unavailable.
+
+<Note>
+  Student accounts start with `inactive` status. The Director must manually activate each account before the student can log in to ORVIAN.
+</Note>
+
+## Bulk Import from SIGERD
+
+**Component:** `StudentImportWizard` (`App\Livewire\App\Academic\Students\StudentImportWizard`)  
+**Route:** `GET /app/academic/students/import`  
+**Permission:** `students.import`
+
+The import wizard processes Excel (`.xlsx`, `.xls`) and CSV files exported from the Dominican Republic's SIGERD system, up to 10 MB. It runs in five stages:
+
+### Step 1 — Upload File
+
+The user selects the file. On upload, `RawStudentImport` reads the first row to extract the column headers. The headers are stored in `$headers` and the wizard advances to Step 2.
+
+### Step 2 — Column Mapping
+
+A visual mapping interface presents each column header from the source file alongside a dropdown of ORVIAN's internal field names. The wizard auto-detects common SIGERD column names using keyword matching:
+
+| ORVIAN Field | Detected From (keywords) |
+|-------------|--------------------------|
+| `first_name` | "nombre", "primer" |
+| `last_name` | "apellido" |
+| `rnc` | "cedula", "cédula", "rnc" |
+| `gender` | "sexo", "genero", "género", "sex" |
+| `date_of_birth` | "nacimiento", "birth" |
+| `tutor_name` | "tutor", "responsable", "encargado" |
+| `tutor_phone` | "tutor" + "tel"/"phone"/"celular"/"whatsapp" |
+| `sigerd_section` | "seccion", "sección", "grado", "curso" |
+
+The user confirms or corrects each mapping. At minimum, `first_name` and `last_name` must be mapped before proceeding. A **default section** can be selected as a fallback for rows where the section cannot be resolved.
+
+### Step 3 — Background Processing
+
+Clicking **Start Import** dispatches the `ProcessStudentImport` Laravel Job. The file is stored at `imports/students/{schoolId}/import_{timestamp}.{ext}` and a `StudentImportRecord` is created with status `pending`. The wizard UI moves to a **real-time progress screen**.
+
+### Step 4 — Real-Time Progress
+
+The `importRecord` computed property polls the `StudentImportRecord` for status updates. The progress bar reflects the job's advancement through the uploaded rows.
+
+### Step 5 — Error Log Download
+
+After completion, any rows that failed processing are available for download as a CSV via `downloadErrors()`. The error file includes all original row data plus an `Error` column describing the failure reason.
+
+### SIGERD-Specific Features
+
+- **`tutor_name` and `tutor_phone`**: Extracted from SIGERD columns and stored on the student record for WhatsApp alerts.
+- **Phone normalization**: `tutor_phone` values are normalized to E.164 format during import.
+- **Section resolution** uses four levels of tolerance:
+  1. **Exact match** — the SIGERD section string matches a `SchoolSection.full_label` exactly.
+  2. **Fuzzy match** — partial or case-insensitive match against existing sections.
+  3. **Default section** — the section selected by the user in the mapping step.
+  4. **Sala de Espera (Waiting Room)** — if no match is found, `school_section_id` is set to `null` and `metadata.sigerd_section` stores the original SIGERD value for later resolution in the Enrollment Hub.
+
+## Enrollment Hub (Sala de Espera)
+
+**Component:** `EnrollmentHub` (`App\Livewire\App\Academic\EnrollmentHub`)  
+**Route:** `GET /app/academic/enrollment-hub`  
+**Permission:** `students.edit`
+
+The Enrollment Hub is a **double-panel interface** for assigning students who are in the waiting room (`school_section_id = null`) to their actual sections. It is the primary workflow after a SIGERD bulk import where section resolution was incomplete.
+
+**Left panel — Unassigned Students:**
+- Paginated list of active students with `school_section_id = null`.
+- Searchable by name or RNC.
+- Filterable by `metadata.sigerd_section` — a quick-filter dropdown lists all distinct SIGERD section values present in the waiting room along with student counts.
+- **`selectBySigerdSection(string $sigerdSection)`** selects all waiting-room students who originally came from a given SIGERD section, enabling batch assignment in a single click.
+
+**Right panel — Section Tree:**
+- Active sections grouped by level, filterable by shift.
+- Clicking a section sets it as `targetSectionId`.
+
+Once the user has selected students and a target section, **Confirm Assignment** dispatches `executeAssignment()`, which performs a single bulk `UPDATE` query using `JSON_SET` to move students and stamp their metadata with the assignment timestamp and target section ID.
+
+## QR Code Wristbands
+
+QR codes are generated automatically by `StudentObserver@creating` before the student record is saved. No manual action is required.
+
+Two routes support printing:
+
+| Route | Permission |
+|-------|-----------|
+| `GET /app/academic/students/print-manager` | `students.import` |
+| `GET /app/academic/students/print-qr-sheet` | `students.import` |
+
+The **Print Manager** (`StudentPrintManager`) provides a filterable list of students with individual QR preview and selection for batch printing. The **Print QR Sheet** route (`StudentPrintController::printQrSheet`) renders a printable layout optimized for wristband or label paper.
+
+## Biometric Enrollment
+
+**Component:** `BiometricKiosk` (`App\Livewire\App\Academic\BiometricKiosk`)  
+**Route:** `GET /app/academic/biometric-kiosk`  
+**Permission:** `students.edit`
+
+The Biometric Kiosk is a dedicated interface for enrolling students in facial recognition. It shows a grid of student cards with real-time enrollment status.
+
+**Filtering:**
+- Filter by section (`selectedSectionId`).
+- Filter by biometric status: `''` (all), `'with'` (enrolled), `'without'` (pending).
+- Free-text phonetic name search.
+
+**Stats bar** shows total students in the current view, enrolled count, and pending count.
+
+**Enrollment flow:**
+
+1. Click **Enroll** on a student card → `openEnrollModal(studentId)` dispatches `open-biometric-modal` to Alpine.js.
+2. The modal activates the device camera. **`facingMode`** is supported: rear-facing camera on mobile, front-facing on desktop.
+3. A live SVG overlay provides a framing guide. Frames are processed with **mirror correction** to account for selfie-mode inversion.
+4. The captured photo is uploaded as a `UploadedFile` via Livewire's `WithFileUploads` and passed to `FaceEncodingManager::enrollStudent()`.
+5. On success, the 128-float face encoding is stored in `students.face_encoding`. The kiosk displays a success result and auto-closes the modal after 1.5 seconds.
+6. On failure (no face detected, poor lighting), an error message prompts a retry.
+7. **Camera release**: Closing the modal by any means (Escape key, overlay click, or close button) dispatches `close-biometric-modal`, which triggers Alpine.js to stop the `getUserMedia` stream and release the hardware.
+
+<Warning>
+  Facial biometric enrollment requires the external **`orvian-facial-recognition`** Python microservice (FastAPI + `face_recognition` library) to be running and reachable by the Laravel application. The Biometric Kiosk will silently fail enrollment if this service is unavailable. Additionally, `getUserMedia()` requires **HTTPS** in production environments — the kiosk will not access the camera over plain HTTP.
+</Warning>
+
+<Note>
+  Student accounts are created with `inactive` status by `StudentObserver@created`. The Director must navigate to the user management screen and manually activate each account before the student can log in.
+</Note>

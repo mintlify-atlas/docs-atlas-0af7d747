@@ -1,0 +1,207 @@
+---
+title: "Facial Recognition Integration: orvian-facial-recognition API"
+sidebarTitle: "Facial Recognition"
+description: "ORVIAN integrates with an optional Python/FastAPI microservice for biometric attendance. Learn how to deploy, enroll students, and verify identity."
+---
+
+ORVIAN's biometric attendance is powered by an independent Python microservice — `orvian-facial-recognition` — built with FastAPI and the `face_recognition` library. It lives in its own repository and is deployed separately from the main Laravel application. The integration is **always optional**: QR wristband scanning and manual attendance work completely without it, and schools that prefer not to use biometrics can ignore this section entirely.
+
+## Architecture
+
+ORVIAN's facial recognition follows a **privacy-first, encoding-only** design:
+
+- **Face encodings** (128 floating-point numbers per face) are stored in Laravel's database in the `students.face_encoding` JSON column.
+- **Photos are never persisted** — not in the database, not on disk, not in logs. The microservice processes uploaded image frames entirely in memory and discards them after producing an encoding or verification result.
+- **`FacialApiClient`** (located at `app/Services/FacialRecognition/FacialApiClient.php`) is the sole HTTP bridge between Laravel and the microservice. It handles authentication via `X-API-Key` header, timeout management (5 s for health checks, 30 s for enroll/verify), and error propagation.
+- **`FaceEncodingManager`** (at `app/Services/FacialRecognition/FaceEncodingManager.php`) wraps `FacialApiClient` with business logic: service health checks, student enrollment persistence, and 1:N identity resolution across all active enrolled students in a school.
+
+```
+Browser / Livewire Component
+        │
+        ▼
+FaceEncodingManager (Laravel service)
+        │   injects
+        ▼
+FacialApiClient  ──── HTTP (X-API-Key) ────►  orvian-facial-recognition
+                                               (FastAPI + face_recognition)
+                                               Processes frame in memory only
+```
+
+## Microservice Endpoints
+
+The `orvian-facial-recognition` FastAPI microservice exposes three endpoints:
+
+### `GET /health`
+
+Health check. Returns the service status. Used by `FacialApiClient::health()` with a 5-second timeout.
+
+```json
+// Response
+{ "status": "ok" }
+```
+
+### `POST /api/v1/enroll/`
+
+Accepts a student photo as a multipart upload and returns a 128-float face encoding. Used during the enrollment flow in the Biometric Kiosk.
+
+**Request** (multipart/form-data):
+
+| Field | Type | Description |
+|---|---|---|
+| `image` | File | Student photo (JPEG/PNG) |
+| `student_id` | int | ORVIAN student primary key |
+| `school_id` | int | ORVIAN school (tenant) primary key |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "encoding": [0.0821, -0.1043, 0.0512, "...125 more floats..."]
+}
+```
+
+On failure, `success` is `false` and a `message` field describes the error (e.g., no face detected in frame).
+
+### `POST /api/v1/verify/`
+
+Performs 1:N face identification against a batch of known encodings. Used by `FaceEncodingManager::identifyStudent()` at the attendance scanner.
+
+**Request** (multipart/form-data):
+
+| Field | Type | Description |
+|---|---|---|
+| `image` | File | Captured frame from scanner |
+| `school_id` | int | ORVIAN school (tenant) primary key |
+| `known_encodings` | JSON string | Array of `{id, name, encoding}` objects for all enrolled students in the school |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "matched": true,
+  "student_id": 42,
+  "student_name": "Ana García",
+  "confidence": 0.94,
+  "distance": 0.38
+}
+```
+
+When no match is found, `matched` is `false` (or `success` is `false`) and the attendance record is not created.
+
+## Deploying the Microservice
+
+The microservice lives in the separate `orvian-facial-recognition` repository and ships with a Dockerfile for straightforward deployment.
+
+**Step 1 — Clone the repository:**
+
+```bash
+git clone https://github.com/your-org/orvian-facial-recognition.git
+cd orvian-facial-recognition
+```
+
+**Step 2 — Build the Docker image:**
+
+```bash
+docker build -t orvian-facial .
+```
+
+**Step 3 — Run the container:**
+
+```bash
+docker run -p 8001:8001 -e API_KEY=your-secret orvian-facial
+```
+
+The service listens on port `8001` by default. The `API_KEY` environment variable sets the secret that Laravel must send via the `X-API-Key` header.
+
+**Step 4 — Verify the service is healthy:**
+
+```bash
+curl http://localhost:8001/health
+# Expected: {"status":"ok"}
+```
+
+**Step 5 — Configure Laravel `.env`:**
+
+```dotenv
+# If the microservice runs in Docker on the same host as Laravel (Docker-to-host):
+FACIAL_API_URL=http://host.docker.internal:8001
+
+# If both run natively on the same machine:
+FACIAL_API_URL=http://localhost:8001
+
+# Shared secret — must match the API_KEY used when starting the container:
+FACIAL_API_KEY=your-secret
+```
+
+<Warning>
+  In production, expose the microservice **only on a private network** or behind a reverse proxy. Never expose port `8001` to the public internet without authentication. Use `FACIAL_API_URL=http://internal-hostname:8001` pointing to your private VPC/LAN address.
+</Warning>
+
+## Required Environment Variables
+
+| Variable | Description | Example |
+|---|---|---|
+| `FACIAL_API_URL` | Base URL of the running `orvian-facial-recognition` microservice | `http://host.docker.internal:8001` |
+| `FACIAL_API_KEY` | Shared secret sent as `X-API-Key` header; must match `API_KEY` in the container | `your-secret` |
+
+These map to `config('services.facial_api.url')` and `config('services.facial_api.key')` in Laravel.
+
+## Student Enrollment
+
+Enrollment is performed through the **Biometric Kiosk**, a dedicated Livewire interface accessible at `/app/academic/biometric-kiosk`. It requires the `students.edit` permission.
+
+**Enrollment workflow:**
+
+1. **Navigate** to `/app/academic/biometric-kiosk`. The kiosk displays a paginated grid of all active students with enrollment status badges (`enrolled` / `pending`).
+
+2. **Filter** the student list by section using the section dropdown, by biometric status (`all` / `enrolled` / `pending`), or by searching the student's first or last name.
+
+3. **Click Enroll** on a student card. A modal opens and activates the device camera. The camera supports **facing-mode selection** — rear camera for mobile devices (better quality in field conditions), front-facing camera for desktop workstations.
+
+4. **Capture frame** — the kiosk captures the current frame from the video stream and applies mirror correction (reverting the canvas flip used for preview display) before uploading. The corrected image is sent to the microservice's `/api/v1/enroll/` endpoint.
+
+5. **Encoding returned** — if the microservice detects a valid face, it returns the 128-float encoding. `FaceEncodingManager::enrollStudent()` calls `$student->update(['face_encoding' => json_encode($result['encoding'])])` to persist it.
+
+6. **Status update** — the student's biometric status changes to `enrolled`. The kiosk stats bar (total / enrolled / pending) refreshes automatically via Livewire computed property invalidation.
+
+7. **Camera release** — the camera stream is stopped automatically when the modal closes (`close-biometric-modal` event), preventing the browser from holding the device camera indefinitely.
+
+If no face is detected in the captured frame (poor lighting, subject turned away), the kiosk displays: *"No se detectó un rostro claro. Intenta de nuevo con mejor iluminación."* No encoding is stored, and the student's status remains `pending`.
+
+<Note>
+  Biometric enrollment is completely optional. Schools that prefer not to use facial recognition can rely entirely on QR wristband scanning or manual attendance — no configuration is needed to disable it. Students without a `face_encoding` are simply skipped during biometric verification.
+</Note>
+
+## Attendance Verification Flow
+
+Once students are enrolled, the `AttendanceScanner` Livewire component performs real-time facial identification during the school's attendance window:
+
+1. **Camera streaming** — `AttendanceScanner` activates the device camera and streams video frames. Face detection on the client side is handled by **face-api.js** (served locally — see section below). face-api.js detects when a face enters the frame before triggering a capture, avoiding unnecessary server calls.
+
+2. **Frame capture** — on face detection, the component captures the current video frame as an image and sends it to the Laravel backend via a Livewire action.
+
+3. **Laravel verification** — Laravel calls `FaceEncodingManager::identifyStudent()`, which:
+   - Fetches all active students with a non-null `face_encoding` for the school.
+   - Calls `FacialApiClient::verifyFace()`, passing the frame and the full array of known encodings as a JSON-encoded multipart field.
+   - The microservice performs 1:N comparison and returns the closest match (if any) with confidence and distance metrics.
+
+4. **Match → attendance recorded** — on a successful match, `PlantelAttendanceService` creates the attendance record for the identified student (with tardiness validation against the school shift schedule). A `attendance-recorded-success` browser event fires, triggering an **audio beep** and a success toast with the student's name.
+
+5. **No match → error feedback** — if no match is found (or the microservice returns `matched: false`), an `attendance-facial-error` browser event fires, triggering a **double error beep** to alert the operator. No record is created.
+
+## face-api.js Local Serving
+
+ORVIAN serves face-api.js from the application's own `public/` directory rather than a CDN:
+
+- **Main library:** `public/vendor/face-api/face-api.min.js`
+- **Models directory:** `public/vendor/face-api/models/`
+
+**Why local?** The CDN endpoint at `cdn.jsdelivr.net` is blocked by **Fortinet** web filtering on most Dominican school networks. Serving the library locally ensures the attendance scanner works without any firewall exceptions or network policy changes.
+
+When updating face-api.js, replace the files in `public/vendor/face-api/` and run `php artisan view:clear` to bust any cached asset references.
+
+<Warning>
+  `getUserMedia()` — the browser API used to access the device camera — **requires HTTPS** in production. Attempting to use the scanner over plain HTTP on a non-`localhost` origin will result in a browser security error and the camera will not activate. Ensure your production deployment is behind an SSL-terminating reverse proxy (Nginx/Caddy) with a valid certificate.
+</Warning>

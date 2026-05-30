@@ -1,0 +1,111 @@
+---
+title: "Plans, Features, and School Subscription Management"
+sidebarTitle: "Plans & Features"
+description: "ORVIAN's Owner panel manages subscription plans, module feature flags, and school assignments. Configure limits and capabilities per plan."
+---
+
+ORVIAN uses a plan-based feature system to control what each school can access. Plans define two things: **capabilities** (which modules and features are unlocked) and **limits** (maximum number of students and staff users). The platform Owner manages the full plan catalog and assigns plans to schools. Feature access is enforced at the middleware level on every request.
+
+## Plans
+
+The plan catalog is managed at `/admin/plans` by the `PlanIndex` Livewire component (`App\Livewire\Admin\Plans\PlanIndex`). Requires the `plans.view` permission; creating and editing requires `plans.manage`.
+
+Plans are displayed as a grid of cards. A slide-over panel opens for creation and editing, with a live preview card that updates in real time as fields change.
+
+Each plan has the following fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Display name shown on the plan card and school dashboard |
+| `slug` | string | Auto-generated from name; used as a programmatic identifier |
+| `const_name` | string | Uppercased snake-case constant (e.g., `PLAN_BASICO`); auto-derived from name |
+| `price` | numeric | Monthly price used for MRR calculations in the admin dashboard |
+| `limit_students` | integer | Maximum number of active students allowed for schools on this plan |
+| `limit_users` | integer | Maximum number of staff users allowed |
+| `bg_color` | hex | Background color for the plan badge and card |
+| `text_color` | hex | Text color for the plan badge |
+| `is_featured` | boolean | Marks one plan as the highlighted/recommended option on the public pricing page |
+| `is_active` | boolean | Whether the plan is visible and assignable. At least one active plan must exist at all times. |
+
+**Only one plan can be `is_featured = true` at a time.** When a plan is saved with `is_featured = true`, any previously featured plan is automatically unfeatured within the same database transaction — no manual cleanup required.
+
+Plans with schools assigned to them cannot be deleted. Attempting to do so returns a validation error.
+
+<Note>
+  The `Plan` model exposes a `canAccess()` helper method that you can use in controllers or services to check whether a given school's plan grants access to a specific capability. For feature-flag checks scoped to a school instance, use `School::hasFeature(string $slug)` instead (see the Feature Matrix section below). Use `canAccess()` when you have direct access to the `Plan` model and need a quick boolean gate without loading the school relationship.
+</Note>
+
+## Feature Matrix
+
+The feature matrix is managed at `/admin/plans/{plan}/features` by the `PlanFeatures` Livewire component. Requires `plans.manage` permission.
+
+The interface displays a toggle grid of all active features grouped by module. Each toggle represents whether a specific capability is enabled for the selected plan. The plan preview card on the right updates in real time as toggles change, showing which features would be visible to schools on that plan.
+
+Features are stored in the `features` table and linked to plans through the `feature_plan` pivot table (`Plan belongsToMany Feature`). Saving the matrix calls `$plan->features()->sync($featureIds)` inside a database transaction.
+
+Example feature slugs and their module groupings:
+
+| Slug | Module |
+|------|--------|
+| `attendance_qr` | Asistencia |
+| `attendance_facial` | Asistencia |
+| `classroom` | Académico |
+| `reports` | Reportes |
+
+The `Feature::getIcon()` method returns the module slug (e.g., `asistencia`, `academico`, `reportes`) which maps to SVG icons in `public/assets/icons/modules/` — rendered via `<x-ui.module-icon>`.
+
+## Feature Flags on Schools
+
+At runtime, module access middleware checks `School::hasFeature(string $slug)` to determine whether a given route is accessible for the current school.
+
+```php
+// Example usage in a service or middleware
+if (! $school->hasFeature('attendance_facial')) {
+    abort(403, 'Facial recognition is not included in your current plan.');
+}
+```
+
+This method checks the school's current plan's feature collection. Changing a school's plan immediately affects which features return `true` — there is no cache layer between the plan assignment and the feature check.
+
+## Assigning Plans
+
+From the school detail view at `/admin/schools/{school}` (`SchoolShow`), the Owner can change the plan assigned to a school by selecting a new plan from the dropdown and confirming. The plan change is immediate — `school.plan_id` is updated and the new feature set takes effect on the next request from that school's users.
+
+From the school list at `/admin/schools` (`SchoolIndex`), the Owner can also trigger a plan change directly via the `confirmPlanChange()` action, which opens a confirmation modal without navigating away from the list.
+
+## School Management
+
+The school list is rendered by `SchoolIndex` at `/admin/schools` (requires `schools.view`). It provides advanced filtering options:
+
+- **Geographic filters** — filter by Regional Education authority (`regional`) and Educational District (`district`). Selecting a regional automatically resets the district selector to prevent invalid combinations.
+- **Plan filter** — filter schools by their assigned plan.
+- **Status filters** — filter by `active` (operational), `suspended` (payment issue), or `inactive` (archived).
+
+Each row in the table shows:
+- School name and plan badge
+- Director name and email
+- Active student count (students where `is_active = true`)
+- Staff count (non-student users; teachers are counted only if their teacher record is `is_active = true`)
+- Last activity timestamp
+
+A statistics bar above the table shows totals (schools, users, MRR) scoped to the active filters — not always the full platform count.
+
+The school detail view at `/admin/schools/{school}` (`SchoolShow`) displays the full school profile including plan, geographic hierarchy, quota meters for students and staff, academic structure tree (grouped by shift → level → cycle → family → grade), and a Google Maps integration for setting the school's physical coordinates.
+
+## Observability
+
+**Laravel Pulse** is available at `/admin/pulse`. Access requires the `viewPulse` gate, which is restricted to the Owner role. Pulse displays real-time server metrics: request throughput, slow queries, job queues, cache hits, and exception rates.
+
+**Log Viewer** is available at `/admin/logs`. Access is restricted to `Owner` and `TechnicalSupport` roles. Logs are searchable and filterable by level, date, and message content — useful for investigating integration failures (WhatsApp, Chatwoot, facial recognition) without SSH access.
+
+## Admin Dashboard
+
+The Owner dashboard at `/admin/hub` is rendered by `StatsOverview` (`App\Livewire\Admin\Dashboard\StatsOverview`). It computes and displays:
+
+- **MRR (Monthly Recurring Revenue)** — sum of plan prices for all active, non-suspended schools.
+- **Active school count** — schools where `is_active = true`.
+- **Inactive school count** — total minus active.
+- **Total user count** — platform-wide user count.
+- **30-day school growth chart** — ApexCharts line chart showing new school registrations per day over the last 30 days.
+- **Plan distribution chart** — ApexCharts donut/bar chart showing how many schools are on each plan.
+- **Latest registered schools** — a table of the 5 most recently created schools with their responsible user.

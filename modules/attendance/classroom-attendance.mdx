@@ -1,0 +1,102 @@
+---
+title: "Classroom Roll Call and Attendance History"
+sidebarTitle: "Classroom Attendance"
+description: "Teachers record per-subject classroom attendance using ClassroomAttendanceLive. Cross-validation with Plantel data automatically enforces presence rules."
+---
+
+Classroom attendance (*Aula*) is managed by teachers on a per-subject, per-section basis. The `ClassroomAttendanceLive` Livewire component at `/app/attendance/classroom` provides a real-time roll-call interface where teachers mark each student's status for a given class period. Before the teacher saves the roll call, `ClassroomAttendanceService` cross-validates every status against the student's Plantel entry record for the same day — ensuring that a student marked absent at the campus gate can never be marked present inside a classroom, and surfacing students who entered the school but skipped class as a pasilleo alert.
+
+<Tip>
+  Academic Coordinators hold the `attendance_classroom.view` permission and can access the full cross-school discrepancy data panel in the **Attendance Dashboard** (`/app/attendance/dashboard`). This gives them a school-wide pasilleo view without needing to open each teacher's roll call individually.
+</Tip>
+
+---
+
+## Teacher Roll Call Interface
+
+**Route:** `/app/attendance/classroom` · **Permission:** `attendance_classroom.record`
+
+When a teacher opens `ClassroomAttendanceLive`, the component queries all active `TeacherSubjectSection` assignments for the authenticated teacher's `teacher_id` in the current academic year. The teacher then selects a subject-section card to load the roll call for that class.
+
+**Roll-call workflow:**
+
+1. The teacher selects their assignment (subject + section).
+2. `loadStudents()` is called, fetching the section's active students and cross-referencing three data sources in priority order:
+   - Existing `ClassroomAttendanceRecord` for this assignment today (highest priority — preserves edits).
+   - Existing `PlantelAttendanceRecord` for today (pre-fills the status based on campus entry).
+   - Approved `AttendanceExcuse` via `ExcuseService::getCoveredStudentsForDate()`.
+   - Default: `present` if no prior data exists.
+3. The teacher reviews and adjusts statuses for each student using the status toggle buttons.
+4. Students whose Plantel status is `absent` or `excused` are **locked** — their status row is visually disabled and `isLockedByPlantel()` prevents any `setStatus()` call from changing their value.
+5. The teacher clicks **Guardar Pase de Lista**, triggering `saveAttendance()`.
+
+**Substitute mode:** Teachers can toggle **Modo Sustituto** to search for and take roll call in a section that is not in their regular assignment list. In substitute mode, the teacher searches by grade or section label, selects the section, and then picks the subject assignment belonging to the original teacher. This is recorded under the substitute teacher's session but tied to the original `TeacherSubjectSection` assignment.
+
+---
+
+## Cross-Validation Logic
+
+`ClassroomAttendanceService` enforces three strict business rules on every `takeClassAttendance()` call:
+
+| Plantel Record Status | Classroom Outcome |
+|-----------------------|-------------------|
+| `absent` | `ClassroomAttendanceRecord` blocked. The service throws an exception: *"El estudiante está marcado como 'Ausente' en el plantel."* The record is skipped (`skipped` counter incremented) and the teacher receives a warning notification summarising skipped entries. |
+| `excused` | `ClassroomAttendanceRecord` blocked with same exception. The teacher's submitted status is ignored; the absence-excused status propagates from Plantel. |
+| `present` or `late` + teacher submits `present` + student has approved excuse | Status is silently forced to `excused` by `ExcuseService` integration inside `takeClassAttendance()`. |
+| `present` or `late` + teacher submits `absent` | Record saved as `absent`. This combination is detected as **pasilleo** by `detectDiscrepancies()` and surfaced in the dashboard discrepancy panel. |
+| No Plantel record + approved excuse | Recording allowed. The excuse is treated as equivalent to a Plantel check-in. |
+| No Plantel record + no excuse | `validateCrossAttendance()` throws an exception: *"El estudiante no ha registrado entrada al plantel hoy."* |
+
+The `saveAttendance()` method returns a result array with `recorded` (successful inserts/updates) and `skipped` (blocked by cross-validation) counts. The teacher sees a success toast if `skipped === 0`, or a warning toast listing how many entries were omitted if skipped > 0.
+
+---
+
+## Pasilleo Detection
+
+The **pasilleo** alert identifies students who physically entered the school (Plantel status: `present` or `late`) but are marked absent in one or more class periods. Detection is performed by `ClassroomAttendanceService::detectDiscrepancies()`:
+
+```
+For each student with PlantelAttendanceRecord.status IN (present, late):
+    Count ClassroomAttendanceRecord rows WHERE status = absent AND date = today
+    If count > 0 → push to discrepancies collection with classes_absent count
+```
+
+The dashboard's discrepancy panel calls this method on every data refresh and displays each flagged student's name, photo, Plantel status label, and number of missed classes. Coordinators can filter the panel by section to isolate specific groups.
+
+---
+
+## Classroom History
+
+**Route:** `/app/attendance/classroom/history` · **Permission:** `attendance_classroom.view` · **Component:** `ClassroomAttendanceHistory`
+
+The history view is a full-featured filterable data table of `ClassroomAttendanceRecord` entries across the school. Available filters (applied via the `ClassroomAttendanceFilters` pipeline):
+
+| Filter | Description |
+|--------|-------------|
+| Date range | Filter by single date or a from/to range |
+| Section | Narrow to a specific school section |
+| Teacher | Filter by teacher |
+| Subject | Filter by subject |
+| Status | Filter by attendance status (`present`, `late`, `absent`, `excused`) |
+
+Records can be exported to **Excel** via `ClassroomAttendanceExport` using the export button in the toolbar.
+
+---
+
+## Required Permissions
+
+| Permission | Grants Access To |
+|-----------|-----------------|
+| `attendance_classroom.record` | `/app/attendance/classroom` — Take roll call for assigned sections |
+| `attendance_classroom.view` | `/app/attendance/classroom/history` — View and export the full classroom attendance history |
+
+---
+
+## Teacher Assignments
+
+Teachers only see the sections and subjects they are directly assigned to via the `TeacherSubjectSection` pivot table (`teacher_id × subject_id × school_section_id × academic_year_id`). The component queries `TeacherSubjectSection` filtered by:
+- `teacher_id` matching the authenticated user's linked teacher profile
+- `academic_year_id` matching the currently active academic year
+- `is_active = true`
+
+Teacher assignments are managed by Academic Coordinators at `/app/academic/teachers/{teacher}/assignments`. Changes take effect immediately — the next time the teacher opens `ClassroomAttendanceLive`, the updated assignment list is reflected.

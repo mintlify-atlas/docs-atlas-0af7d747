@@ -1,0 +1,207 @@
+---
+title: "ORVIAN Module System and Feature Flags"
+sidebarTitle: "Modules"
+description: "ORVIAN is a modular monolith. Each module is a feature flag controlled per plan. Learn how modules, plans, and features work together."
+---
+
+ORVIAN follows a **modular monolith** design: all code lives in one Laravel application, but the surface area visible to each school is controlled by a combination of module configuration and plan-based feature flags. `config/modules.php` is the **single source of truth** for every module's metadata — its display name, SVG icon slug, and the navigation sub-links rendered in the app navbar. Feature flags, stored in the `Feature` and `Plan` models, control which modules are enabled for a given school based on the plan they subscribe to.
+
+---
+
+## Module Registry
+
+`config/modules.php` returns an associative array keyed by module slug. Each entry defines:
+
+| Key | Type | Purpose |
+|---|---|---|
+| `module` | `string` | Human-readable module name shown in the UI |
+| `moduleIcon` | `string` | SVG icon slug — maps to `public/assets/icons/modules/{slug}.svg` |
+| `moduleLinks` | `array` | List of `['label', 'route']` sub-links rendered in the module navbar |
+
+```php
+// config/modules.php (excerpt)
+'asistencia' => [
+    'module'      => 'Asistencia',
+    'moduleIcon'  => 'asistencia',
+    'moduleLinks' => [
+        ['label' => 'Dashboard',      'route' => 'app.attendance.dashboard'],
+        ['label' => 'Sesión del Día', 'route' => 'app.attendance.session'],
+        ['label' => 'Scanner',        'route' => 'app.attendance.scanner'],
+        ['label' => 'Pase de Lista',  'route' => 'app.attendance.classroom.live'],
+        ['label' => 'Reportes',       'route' => 'app.attendance.reports'],
+        ['label' => 'Excusas',        'route' => 'app.attendance.excuses.index'],
+    ],
+],
+```
+
+Livewire components that own a full module page pass the config array directly to their layout:
+
+```php
+->layout('layouts.app-module', config('modules.asistencia'))
+```
+
+This automatically populates the module navbar with the correct title, icon, and sub-links — no per-component wiring required.
+
+**Adding a new module** requires only one change: add the entry to `config/modules.php`. Every component that consumes the config inherits it automatically. Adding a sub-link to an existing module is equally simple — add the `['label', 'route']` array to that module's `moduleLinks` and it appears in the navbar for all components in that module.
+
+**Modules not yet in `config/modules.php`** (e.g., `notas`, `horarios`) are commented out. Uncomment the entry to expose it in the module navbar once the implementation is ready.
+
+---
+
+## Available Modules
+
+| Slug | Display Name | Status |
+|---|---|---|
+| `asistencia` | Attendance | ✅ Active |
+| `academico` | Academic Management | ✅ Active |
+| `configuracion` | School Administration | ✅ Active |
+| `conversaciones` | Communications (Chatwoot) | ✅ Active — links to external `chat.orvian.com.do` |
+| `reportes` | Reports & Analytics | 🔜 Coming Soon (`comingSoon` flag set) |
+| `notas` | Grades | 🔜 Coming Soon (`comingSoon` flag set) |
+| `classroom` | Local Classroom (Virtual) | 🔜 Coming Soon (commented out in dashboard) |
+| `horarios` | Schedules | 🔜 Coming Soon (commented out in dashboard) |
+| `inventario` | Inventory / Billing | 🚫 Not yet implemented — no entry in `config/modules.php` |
+
+Dashboard tiles for **Coming Soon** modules render with a `PRONTO` badge and a dimmed icon; clicking them is a no-op. Tiles for modules **not included in a school's plan** render with a `PLAN` badge and a lock icon overlay (`active = false`).
+
+---
+
+## Plans and Features
+
+### `Plan` model
+
+`App\Models\Tenant\Plan` represents a subscription tier. Each plan has:
+
+| Attribute | Type | Description |
+|---|---|---|
+| `slug` | `string` | Machine identifier: `basic`, `premium`, `enterprise` |
+| `name` | `string` | Display name |
+| `limit_students` | `int` | Maximum enrolled students |
+| `limit_users` | `int` | Maximum staff/user accounts |
+| `price` | `decimal` | Monthly price |
+| `is_featured` | `boolean` | Highlighted in the plan picker |
+| `is_active` | `boolean` | Whether the plan is available for new subscriptions |
+
+### `Feature` model
+
+`App\Models\Tenant\Feature` represents a single toggleable capability. Features are linked to plans through a `feature_plan` pivot table (with an optional `settings` JSON column for per-plan overrides).
+
+| Attribute | Description |
+|---|---|
+| `slug` | Unique identifier used in code (e.g., `attendance_qr`, `academic_grades`) |
+| `name` | Human-readable label |
+| `module` | The module domain this feature belongs to |
+| `is_active` | Global kill-switch for the feature |
+
+The `Feature::getIcon()` method returns the correct module SVG slug for rendering the feature in plan cards:
+
+```php
+// app/Models/Tenant/Feature.php
+public function getIcon(): string
+{
+    return match ($this->slug) {
+        'attendance_qr',
+        'attendance_facial'     => 'asistencia',
+        'academic_grades',
+        'academic_excel_import' => 'notas',
+        'classroom_internal'    => 'classroom',
+        'reports_advanced'      => 'reportes',
+        default                 => 'administracion',
+    };
+}
+```
+
+### `School::hasFeature()`
+
+The school's plan is eager-loaded when needed and the `hasFeature()` check is delegated to the plan:
+
+```php
+// app/Models/Tenant/Plan.php
+public function hasFeature(string $featureSlug): bool
+{
+    // Uses an in-memory collection check — no extra query
+    return $this->features->contains('slug', $featureSlug);
+}
+
+// app/Models/Tenant/School.php (line 162)
+// $school->hasFeature('attendance_qr')
+// → delegates to $this->plan->hasFeature($featureSlug)
+```
+
+### Dashboard feature-gating in practice
+
+The dashboard view resolves active feature slugs once per request from the school's plan, then passes them into each tile's `:active` prop:
+
+```blade
+{{-- resources/views/app/dashboard.blade.php --}}
+@php
+    $activeModules = auth()->user()->school->plan->features->pluck('slug')->toArray();
+@endphp
+
+<x-ui.app-tile
+    module="asistencia"
+    title="Asistencia"
+    :active="in_array('attendance_qr', $activeModules)"
+    url="{{ route('app.attendance.dashboard') }}" />
+
+<x-ui.app-tile
+    module="academico"
+    title="Académico"
+    :active="in_array('academic_grades', $activeModules)"
+    url="{{ route('app.academic.courses.index') }}" />
+```
+
+A tile with `:active="false"` is rendered with a grayscale icon and a `PLAN` badge — it is visible but not navigable, prompting the school to upgrade their plan.
+
+---
+
+## Feature Flags in Routes
+
+Route-level access is controlled by the `can:` permission middleware (see [Roles & Permissions](/concepts/roles-permissions)), not by a separate feature-flag middleware. A school on the `basic` plan whose Teacher role lacks `attendance_classroom.record` simply cannot reach `/app/attendance/classroom` because the permission check fails.
+
+For modules that are globally **not yet implemented** (no routes defined), any attempt to construct a URL to them will throw a `RouteNotFoundException` at the `route()` helper level, making them unreachable by construction. For modules that are **commented out** in the dashboard, the tiles are not rendered at all.
+
+---
+
+## Module Icons
+
+SVG icons for each module live in `public/assets/icons/modules/` and are rendered through the `<x-ui.module-icon>` Blade component:
+
+```blade
+<x-ui.module-icon :name="$slug" class="w-10 h-10" />
+```
+
+The `:name` prop must match an SVG filename (without the `.svg` extension) in that directory. Available slugs and their corresponding modules:
+
+| Slug | Module |
+|---|---|
+| `asistencia` | Attendance |
+| `academico` | Academic Management |
+| `administracion` | School Administration / Settings |
+| `reportes` | Reports |
+| `conversaciones` | Communications |
+| `notas` | Grades |
+| `classroom` | Local Classroom |
+| `horarios` | Schedules |
+
+The component is used consistently in the module navbar, dashboard tiles, plan feature cards, and any other context that requires a module icon. Pass any Tailwind sizing class via the `class` attribute.
+
+<Tip>
+  Always use `<x-ui.app-tile>` as the standard component for dashboard module cards. It handles all visual states — active, coming soon, plan-locked, and notification badges — in one place. Never create custom card markup for modules; doing so bypasses the consistent hover animations, lock overlays, and badge rendering that `app-tile` provides out of the box.
+
+  ```blade
+  {{-- ✅ Correct --}}
+  <x-ui.app-tile
+      module="asistencia"
+      title="Asistencia"
+      subtitle="Control"
+      :active="$school->hasFeature('attendance_qr')"
+      url="{{ route('app.attendance.dashboard') }}" />
+
+  {{-- ❌ Avoid: custom card markup --}}
+  <a href="{{ route('app.attendance.dashboard') }}" class="rounded-2xl bg-white ...">
+      <img src="/assets/icons/modules/asistencia.svg" ... />
+      <span>Asistencia</span>
+  </a>
+  ```
+</Tip>

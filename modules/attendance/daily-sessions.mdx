@@ -1,0 +1,103 @@
+---
+title: "Managing Daily Attendance Sessions in ORVIAN"
+sidebarTitle: "Daily Sessions"
+description: "Daily attendance sessions must be opened before recording begins and closed at end of day. Learn how to manage sessions, shifts, and audit logs."
+---
+
+Before any attendance can be recorded — whether via QR scan, facial recognition, or manual roll call — an administrator or coordinator must open a `DailyAttendanceSession` for the day. A session represents a single school shift (*tanda*) on a specific calendar date. Each school may run multiple sessions per day if it operates multiple shifts (e.g. morning and afternoon). Days on which no session is opened are treated by the system as non-school days (holidays or closures) and appear as blank in the dashboard calendar and in all reports and charts.
+
+<Note>
+  Days without an opened session are treated as **holidays** in all reports and ApexCharts visualisations. If a session was accidentally never opened for a real school day, you can open it retroactively from the Session Hub — the historical records will then be available for entry.
+</Note>
+
+---
+
+## Session States
+
+A `DailyAttendanceSession` moves through the following states during its lifecycle:
+
+| State | Description | `closed_at` value |
+|-------|-------------|-------------------|
+| **Open** | The session is active. Attendance recording is permitted for the associated shift. The dashboard calendar shows an amber indicator. | `NULL` |
+| **Closed** | The session has been finalised for the day. `PlantelAttendanceService::markAbsences()` runs during close, auto-creating absence records for any enrolled students in the shift who have no entry record. KPI totals (`total_present`, `total_late`, `total_absent`, `total_excused`) are written to the session row. | timestamp |
+| **Under Review** | A closed session that has been flagged for verification by a user with `attendance_plantel.verify`. The audit view at `/app/attendance/audit/{sessionId}` is the primary tool for this workflow. | timestamp |
+
+---
+
+## Opening a Session
+
+Navigate to **`/app/attendance/session`** (requires `attendance_plantel.open_session`). The `AttendanceSessionManager` Livewire component loads all school shifts configured for the tenant and displays a card per shift showing its current-day session state.
+
+To open a session:
+
+1. Identify the shift card for the tanda you want to open (e.g. *Matutina*, *Vespertina*).
+2. Click **Abrir Sesión**. `AttendanceSessionManager::openSession()` calls `PlantelAttendanceService::openDailySession()`, which:
+   - Checks that no session already exists for this school + date + shift combination.
+   - Counts all active students enrolled in that shift (`Student::active()->inShift($shiftId)->count()`) and stores the result as `total_expected`.
+   - Creates the `DailyAttendanceSession` record with `opened_at = now()` and `opened_by = Auth::id()`.
+3. The card refreshes and recording tools become available for that shift.
+
+If a session already exists for the selected shift and date, the service throws an exception and the component displays an error notification — duplicate sessions are prevented at the service layer.
+
+---
+
+## Closing a Session
+
+Closing is initiated from the **Session Hub** (see below) or from the `AttendanceSessionManager`. When you click **Cerrar Sesión**, the component calls `confirmCloseSession()`, which:
+
+1. Finds all students in the shift who have **no** entry record yet (pending students).
+2. Queries `ExcuseService::getCoveredStudentsForDate()` to determine how many of those pending students have an approved excuse for today.
+3. Projects the final absent and excused counts (real recorded + projected unrecorded).
+4. Opens a confirmation modal showing the projected summary before you commit.
+
+On confirmation, `closeSession()` is called, which:
+- Calls `PlantelAttendanceService::markAbsences()` — creates `PlantelAttendanceRecord` rows for all students still without a record, automatically assigning `excused` status to those with an approved excuse and `absent` to the rest.
+- Calls `PlantelAttendanceService::closeDailySession()` — stamps `closed_at`, `closed_by`, and writes the final KPI columns.
+
+---
+
+## Session Hub
+
+The **Session Hub** at `/app/attendance/hub` (requires `attendance_plantel.view`) is the central session management view. It displays historical sessions across all shifts, with the ability to:
+
+- See open and closed sessions for any past date using the date picker.
+- Open a session for today directly from the hub (delegates to the same `openSession` flow).
+- Initiate a session close and view the pre-close summary modal.
+- Navigate to the audit trail for any closed session.
+
+The hub is the recommended starting point at the beginning and end of each school day.
+
+---
+
+## Audit Trail
+
+The audit view at `/app/attendance/audit/{sessionId}` (requires `attendance_plantel.verify`) provides a full record of session activity for a specific `DailyAttendanceSession`:
+
+- **Who opened** the session and at what time (`opened_by` → User, `opened_at` timestamp).
+- **Who closed** the session and at what time (`closed_by` → User, `closed_at` timestamp).
+- **Final KPIs** at close: `total_expected`, `total_registered`, `total_present`, `total_late`, `total_absent`, `total_excused`.
+- **Individual attendance records** within the session, including entry time, recording method, and any metadata flags (e.g. `license_alert`).
+- **Change log** of any status corrections made after initial recording.
+
+The audit view is read-only. It is intended for the Academic Coordinator or school director to verify the integrity of a closed session before including it in official reports.
+
+---
+
+## Demo Data
+
+To populate realistic historical sessions for testing or demonstrations, use the `orvian:seed-demo` Artisan command:
+
+```bash
+php artisan orvian:seed-demo --school_id=ID --days=30
+```
+
+This generates `DailyAttendanceSession` and `PlantelAttendanceRecord` entries for every weekday (Monday–Friday) in the specified range. Weekends are automatically skipped — no session is created for Saturday or Sunday. The demo distribution is:
+
+- **Plantel:** 80% present · 10% late · 5% absent · 5% excused
+- **Classroom:** 75% present · 10% late · 10% absent · 5% excused (for students who were present at Plantel), generating realistic pasilleo discrepancies visible in the dashboard.
+
+Three `AttendanceExcuse` records (status: approved) are also created for random students.
+
+<Warning>
+  The `--fresh` flag deletes **all** attendance data for the specified `school_id` before regenerating: sessions, Plantel records, classroom records, and excuses are all erased. **Never run `--fresh` on a school with real operational data.** It is strictly a development and demo tool.
+</Warning>

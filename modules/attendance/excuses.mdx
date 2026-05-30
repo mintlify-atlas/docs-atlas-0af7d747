@@ -1,0 +1,115 @@
+---
+title: "Managing Attendance Excuses and Justifications"
+sidebarTitle: "Excuses"
+description: "ORVIAN's excuse workflow lets coordinators review, approve, or reject absence justifications. Approved excuses retroactively update attendance records."
+---
+
+The Excuse module provides a structured workflow for absence justifications submitted on behalf of students. When a coordinator approves an excuse, `ExcuseService` immediately applies it retroactively: every `PlantelAttendanceRecord` and `ClassroomAttendanceRecord` that falls within the excuse's date range for that student is updated to `excused` status. This retroactive update ensures that already-closed sessions and teacher roll calls reflect the correct justified status without requiring manual corrections across multiple records.
+
+<Note>
+  The `AttendanceExcuseObserver` listens for state transitions on the `AttendanceExcuse` model and fires domain events accordingly. This is the integration point used by notification listeners (e.g. WhatsApp alert suppression) and any future webhook subscribers.
+</Note>
+
+---
+
+## Excuse Workflow
+
+<Steps>
+  <Step title="Excuse Submitted">
+    A coordinator or authorised staff member opens the submission panel in `ExcuseIndex` and fills in the excuse details: student, date range, license type, reason text, and an optional evidence file (photo or PDF, max 5 MB). `ExcuseIndex::submit()` validates the payload and calls `ExcuseService::submitExcuse()`, which creates the `AttendanceExcuse` record with `status = pending` and `submitted_at = now()`. Evidence files are stored at `schools/{school_id}/excuses` in the public disk.
+  </Step>
+  <Step title="Review Queue">
+    The new excuse appears in the coordinator's review queue at `/app/attendance/excuses` with status **Pendiente**. The queue is filterable by status, date range, and student name.
+  </Step>
+  <Step title="Coordinator Decision">
+    The coordinator clicks **Aprobar** or **Rechazar** on an excuse row. `ExcuseIndex::openReview()` opens the review modal, where the coordinator can enter optional notes before confirming. Rejection requires a minimum 5-character notes field (enforced by Livewire validation).
+  </Step>
+  <Step title="Retroactive Update on Approval">
+    `ExcuseIndex::approve()` calls `ExcuseService::approveExcuse()`, which updates the `AttendanceExcuse` to `status = approved` with `reviewed_by` and `reviewed_at` timestamps. The `AttendanceExcuseObserver` reacts to this state transition and triggers the retroactive marking logic (see [Retroactive Marking](#retroactive-marking) below).
+  </Step>
+  <Step title="Student / Parent Notification">
+    If WhatsApp notifications are configured (`WHATSAPP_ENABLED=true` and a valid `tutor_phone` on the student record), `SendAttendanceAlertJob` is dispatched asynchronously to notify the parent of the excuse outcome. Duplicate notifications within the same week are suppressed by the anti-spam cache (see [Anti-Spam Alerts](#anti-spam-alerts)).
+  </Step>
+</Steps>
+
+---
+
+## Excuse Fields
+
+The `AttendanceExcuse` model stores the following fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `student_id` | FK → `students` | The student whose absence is being justified |
+| `date_start` | date | First day covered by the excuse |
+| `date_end` | date | Last day covered (can equal `date_start` for single-day excuses) |
+| `type` | enum string | License type — see table below |
+| `reason` | text | Free-text justification written by the submitter |
+| `attachment_path` | string\|null | Relative path in the public disk to an uploaded evidence file (PDF, JPG, PNG) |
+| `status` | enum string | `pending` · `approved` · `rejected` |
+| `submitted_by` | FK → `users` | User who submitted the excuse |
+| `submitted_at` | datetime | Submission timestamp |
+| `reviewed_by` | FK → `users` \| null | Coordinator who reviewed the excuse |
+| `reviewed_at` | datetime\|null | Review timestamp |
+| `review_notes` | text\|null | Optional coordinator notes (required when rejecting) |
+
+**Excuse types (`type` field):**
+
+| Constant | Value | Label | Behaviour |
+|----------|-------|-------|-----------|
+| `TYPE_FULL_ABSENCE` | `full_absence` | Ausencia Total | Standard full-day absence justification |
+| `TYPE_LATE_ARRIVAL` | `late_arrival` | Llegada Tardía | Justifies a late entry (`late` status) |
+| `TYPE_EARLY_DEPARTURE` | `early_departure` | Salida Anticipada | Justifies an early exit |
+| `TYPE_LICENSE` | `license` | Licencia | Administrative leave; student may still enter campus — triggers a `license_alert` flag in `PlantelAttendanceRecord.metadata` if they do |
+| `TYPE_MEDICAL` | `medical` | Licencia Médica | Extended medical leave; same campus-entry behaviour as `license` |
+
+`TYPE_LICENSE` and `TYPE_MEDICAL` are collectively identified as **license types** (`AttendanceExcuse::LICENSE_TYPES`). If a student with an active license-type excuse physically enters the school during the excuse period, `PlantelAttendanceService` records the entry normally but sets `metadata['license_alert'] = true` and logs the event for coordinator awareness.
+
+---
+
+## ExcuseIndex Interface
+
+**Route:** `/app/attendance/excuses` · **Permission:** `excuses.view` · **Component:** `ExcuseIndex`
+
+The `ExcuseIndex` Livewire component extends the base `DataTable` class and renders a paginated, filterable list of all `AttendanceExcuse` records for the school. Available filters (URL-synced via `#[Url]` attribute, applied through the `ExcuseFilters` pipeline):
+
+| Filter | Description |
+|--------|-------------|
+| `student` | Student ID — displayed as the student's full name in the filter chip via `formatFilterValue()` |
+| `status` | `pending` · `approved` · `rejected` — displayed in Spanish in the chip |
+| `date_range` | Associative array `{from, to}` — displayed as `dd/mm/yyyy – dd/mm/yyyy` in the chip |
+
+The interface also exposes a **submission panel** (slide-over form) for creating new excuses, accessible to users with `excuses.submit` permission, and a **review modal** for approve/reject actions, accessible to users with `excuses.approve` / `excuses.reject` permissions.
+
+---
+
+## Retroactive Marking
+
+When `ExcuseService::approveExcuse()` is called (triggered from `ExcuseIndex::approve()`), the `AttendanceExcuseObserver` reacts to the model's `updated` event and initiates retroactive marking:
+
+**Plantel records:** The observer finds all `PlantelAttendanceRecord` entries where:
+- `student_id` matches the excuse's student
+- `date` falls within `[date_start, date_end]`
+
+Each matching record is updated to `status = 'excused'`.
+
+**Classroom records:** The same date-range query is applied to `ClassroomAttendanceRecord` — all per-subject records for the student within the excuse window are updated to `status = 'excused'`.
+
+The retroactive update runs synchronously inside the observer to ensure data consistency is immediate. For date ranges spanning more than a few days, this may take a brief moment; the coordinator sees a success notification once the process completes.
+
+`ExcuseService::hasApprovedExcuseForDate()` is used throughout the system (in `markAbsences()`, `validateCrossAttendance()`, and `loadStudents()`) to check in real time whether a student has an active approved excuse for a given date, preventing any new `absent` records from being created while the excuse is in effect.
+
+---
+
+## Anti-Spam Alerts
+
+ORVIAN uses `AttendanceAlertEvaluator` to monitor monthly absence and tardiness thresholds per student and dispatch WhatsApp notifications to parents via `SendAttendanceAlertJob`. To prevent a parent from receiving the same alert type multiple times in a single week, the evaluator applies a **weekly cache key** guard:
+
+```
+Cache key:  alert_{type}_{student_id}_{weekOfYear}
+TTL:        7 days
+```
+
+Before dispatching a `SendAttendanceAlertJob`, the evaluator checks whether a cache entry exists for the combination of alert type, student, and ISO week number. If the key is present, the job is skipped. If not, the job is dispatched and the key is written to cache with a 7-day TTL.
+
+This prevents duplicate WhatsApp messages when the `orvian:evaluate-attendance-alerts` command runs daily (scheduled at 16:00 via `routes/console.php`). The command accepts an optional `--school` argument to evaluate a specific school; without it, all active schools are evaluated in sequence.

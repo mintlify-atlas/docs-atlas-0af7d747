@@ -1,0 +1,136 @@
+---
+title: "Course Sections, Levels, and Academic Structure"
+sidebarTitle: "Courses"
+description: "Configure school grade levels, course sections, and technical titles in ORVIAN. The CourseForm wizard walks you through a 4-step section setup."
+---
+
+ORVIAN models the Dominican Republic educational hierarchy — **Level → Grade → SchoolSection**. Sections support both regular academic tracks and technical specializations (bachillerato técnico), and are the atomic unit that students, teachers, and attendance records are attached to.
+
+<Note>
+  The active `AcademicYear` is resolved automatically from the current month — there is no manual year selector in the CourseForm wizard or anywhere in the Academic module. Year transitions are handled by the system when the calendar month changes.
+</Note>
+
+## Academic Hierarchy
+
+The three-tier hierarchy maps directly to the Dominican MINERD structure:
+
+### Level (`App\Models\Tenant\Academic\Level`)
+
+Top-level grouping. Examples: **Primaria**, **Secundaria**. Schools configure which levels they operate via the setup wizard; the `school_levels` pivot table stores the enabled level IDs per school.
+
+### Grade (`App\Models\Tenant\Academic\Grade`)
+
+A grade belongs to a Level and carries two important flags:
+
+- **`cycle`** — Indicates the educational cycle (Primer Ciclo, Segundo Ciclo). Used for grouping in the onboarding wizard UI.
+- **`allows_technical`** — `true` for upper secondary grades (typically 3ro–6to of Secundaria) that can host technical specialization sections. When `true`, the CourseForm wizard shows an additional step for selecting a technical title.
+
+### SchoolSection (`App\Models\Tenant\Academic\SchoolSection`)
+
+The classroom section. Key fields:
+
+| Field | Description |
+|-------|-------------|
+| `grade_id` | Parent grade |
+| `label` | Parallel letter (`A`, `B`, `C`, etc.) |
+| `school_shift_id` | School shift (Matutina, Vespertina, etc.) |
+| `technical_title_id` | Nullable — set for technical track sections |
+| `is_active` | Can be toggled without deletion |
+
+The `full_label` accessor assembles the human-readable name: `"{grade} - {label} ({technicalTitle}) [{shift}]"`. The shift is only appended when the school has more than one shift registered.
+
+`SoftDeletes` is enabled. Soft-deleted sections are excluded from all student and attendance queries but can be restored for auditing.
+
+## Course Index
+
+**Component:** `CourseIndex` (`App\Livewire\App\Academic\CourseIndex`)  
+**Route:** `GET /app/academic/courses`  
+**Permission:** `settings.view` or `settings.update`
+
+The course index displays all sections for the school, grouped by level and organized into grade cards. Key features:
+
+- **Shift filter** — A tab strip at the top filters the entire view to one shift (`selectedShiftId`). Defaults to the first shift registered for the school.
+- **Section cards** — Each card shows the section label, technical title badge (if applicable), and **live student count** (active students only, loaded via eager relationship).
+- **Both active and inactive sections are shown** — The Director can see and manage inactive sections. Soft-deleted sections are never shown.
+- **Stats bar** — Totals for active sections, inactive sections, and total active students across the school.
+
+Section cards surface two inline actions:
+- **Toggle active/inactive** — Deactivating a section is blocked if it has active students.
+- **Delete** — Only sections with no student history (including soft-deleted students) can be hard-deleted. Sections with any historical student records must be deactivated instead.
+
+## Creating a Section (CourseForm Wizard)
+
+**Component:** `CourseForm` (`App\Livewire\App\Academic\CourseForm`)  
+**Route:** `GET /app/academic/courses/create`  
+**Permission:** `settings.view` or `settings.update`
+
+Section creation uses a **reactive multi-step wizard** with a progress bar. The number of steps is dynamic: 3 steps for purely academic sections, 4 steps when the selected grade allows technical tracks.
+
+### Step 1 — Select Level
+
+The user selects from the levels enabled for their school. Only levels present in the `school_levels` pivot for the school are shown (all levels shown as fallback if none are configured).
+
+### Step 2 — Select Grade
+
+Grades are loaded for the selected level, ordered by their `order` field. Selecting a grade sets `selectedGradeId` and determines whether Step 3 (technical type selection) will be shown.
+
+### Step 3 — Section Type *(conditional)*
+
+This step appears only when `selectedGrade.allows_technical = true` **and** the school's modality supports technical tracks (`TECHNICAL`, `TECHNICAL_BACHILLER`, `MIXED`, or `ARTS`).
+
+The user chooses between:
+- **Academic** — a standard track section. Step 3 is skipped in the progress bar if the grade does not allow technical.
+- **Technical** — a specialization section. The user then selects a `TechnicalFamily` and a `TechnicalTitle` from that family.
+
+The **Confirm Title** button must be clicked to lock in the title before advancing. This two-action flow (`confirmTitle()` → `nextStep()`) prevents accidental advancement with an unconfirmed technical selection.
+
+For schools with the `ARTS` modality, families are filtered to `modality = 'arts'`; all other technical modalities use `modality = 'technical'`.
+
+### Step 4 — Configure Parallel and Shift
+
+The user inputs:
+- **Parallel label** (`label`) — typically a single letter (`A`, `B`, `C`). Stored uppercase.
+- **Shift** (`shiftId`) — from the school's registered shifts.
+
+The wizard shows **existing sections** for the selected grade/type combination to help avoid duplicates. A **duplicate parallel guard** is enforced on save: if a section with the same `(school_id, grade_id, label, school_shift_id, technical_title_id)` already exists, an inline error is shown and the section is not created.
+
+### Progress Bar
+
+The progress bar is fully reactive. It uses `visualStep` and `totalVisualSteps` computed properties:
+- When Step 3 is skipped (academic grade), `visualStep` maps logical step 4 → visual step 3, so the bar reads `3/3` instead of `4/3`.
+- `progressPercent` is displayed as a CSS width percentage.
+
+## Section Detail
+
+**Component:** `CourseShow` (`App\Livewire\App\Academic\CourseShow`)  
+**Route:** `GET /app/academic/courses/{section}`  
+**Permission:** `settings.view` or `settings.update`
+
+The section detail view provides:
+- **Inline metadata editing** — section label, shift, and technical title can be updated without a separate form page.
+- **Active/inactive toggle** — with the same guard as the index (blocked if active students are enrolled).
+- **Linked student list** — shows all students currently enrolled in the section, with quick-links to each student's profile and a shortcut to the Enrollment Hub for moving students.
+
+## Technical Titles
+
+The technical catalog is seeded from the MINERD official catalog via `TechnicalCatalogSeeder`:
+
+```
+TechnicalFamily  →  TechnicalTitle
+```
+
+- **`TechnicalFamily`** — A broad specialization family, e.g., "Tecnología de la Información", "Salud". Has a `modality` field (`technical` or `arts`).
+- **`TechnicalTitle`** — A specific professional qualification within a family, e.g., "Técnico en Redes y Comunicaciones". Has `name`, `code`, and `short_name` fields.
+
+Sections with a `technical_title_id` display a **specialization badge** in the Course Index, showing the `TechnicalTitle.short_name` (or `name` if no short name is configured) alongside the section label.
+
+The `CourseForm` wizard loads families filtered by the school's modality, then loads titles dynamically when a family is selected (`updatedTempFamilyId()` invalidates the `titlesForFamily` computed property).
+
+## Automatic Structure on Onboarding
+
+When a school completes the onboarding wizard, the `SchoolConfigured` event is dispatched. The **`SetupAcademicStructure`** listener responds by automatically creating `SchoolSection` records for every combination of:
+- Enabled levels and their grades.
+- Configured parallel letters (e.g., A, B, C).
+- Registered school shifts.
+
+This means a newly configured school arrives at the Academic module with a pre-populated section tree matching the wizard's input — no manual section creation is required for the initial structure. The CourseForm wizard is intended for adding sections **after** onboarding, such as opening a new parallel mid-year or adding a new technical track.

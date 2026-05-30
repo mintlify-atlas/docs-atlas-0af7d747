@@ -1,0 +1,206 @@
+---
+title: "ORVIAN Architecture: Modular Monolith with Multi-Tenancy"
+sidebarTitle: "Architecture"
+description: "ORVIAN is a Laravel 12 modular monolith with full multi-tenant isolation. Learn how Livewire, services, filters, and events are organized."
+---
+
+ORVIAN is a **modular monolith** — a single Laravel 12 application where domain boundaries are enforced through directory structure, naming conventions, and a layered service architecture, rather than by splitting the system into separate deployable microservices. This approach was chosen deliberately for the Dominican-school context: it dramatically simplifies deployment (a single `php artisan serve` or Nginx + PHP-FPM setup), eliminates inter-service network latency, and keeps the entire codebase navigable by a small team. The stack is Laravel 12 on the backend, Livewire 4 for reactive server-driven UI, Alpine.js for lightweight client-side behavior, and Tailwind CSS for styling — all compiled by Vite. Multi-tenancy is enforced at the Eloquent level using global scopes and resolved per-request by middleware, so each school sees only its own data regardless of how many other schools share the same installation.
+
+---
+
+## Directory Structure
+
+The most important architectural convention in ORVIAN is the strict separation between **platform-admin** code (which operates across all schools) and **tenant** code (which operates within a single school). This boundary is reflected in every key directory.
+
+| Path | Purpose |
+|---|---|
+| `app/Livewire/Admin/` | Platform-admin Livewire components — manage schools, users, plans, and billing across the entire installation. These components run outside any tenant scope. |
+| `app/Livewire/App/` | Tenant Livewire components — attendance, students, grades, schedules, and all other school-level features. Every component here operates within the resolved tenant context. |
+| `app/Models/Tenant/` | Eloquent models scoped to a single school. Each model carries a `GlobalScope` that automatically appends `WHERE school_id = ?` to every query. Never load these models outside of an authenticated tenant context. |
+| `app/Services/` | Domain business logic. Livewire components call services; services call models. No business logic lives in components or models themselves. |
+| `app/Services/FacialRecognition/` | HTTP client integration with the optional external Python biometric API (`FacialApiClient`, `FaceEncodingManager`). Isolated here so the rest of the application never has a direct dependency on the biometric service. |
+| `app/Events/Tenant/` | Domain events dispatched within a tenant context and processed asynchronously by queued listeners (e.g., `SchoolConfigured`). |
+| `app/Filters/` | Table filter pipelines used by Livewire data-table components. Each filter pipeline maps to a domain and handles search, sort, and multi-criteria filtering without polluting the Livewire component itself. |
+| `routes/app/` | Tenant-scoped route files, one per feature domain (e.g., `attendance.php`, `academic.php`, `grades.php`). All routes in this directory are protected by tenant-resolution middleware. |
+| `routes/admin/` | Platform-admin routes — schools, plans, users, roles, and observability endpoints. Protected by `EnsureGlobalAdminAccess` middleware. |
+
+---
+
+## Livewire Component Pattern
+
+Every interactive UI feature in ORVIAN follows the same three-part pattern. Consistency here is a deliberate architectural rule — it makes the codebase predictable and ensures that no feature sneaks business logic into the wrong layer.
+
+### 1. The Livewire Class
+
+Lives in `app/Livewire/App/<Domain>/` (for tenant features) or `app/Livewire/Admin/` (for platform-admin features). The class is responsible for:
+
+- Declaring reactive public properties (bound to the UI via `wire:model`)
+- Receiving user actions via Livewire methods (`wire:click`, `wire:submit`)
+- Delegating all meaningful work to the service layer
+- Dispatching browser events or Livewire events to coordinate with Alpine components
+
+```
+app/Livewire/App/Attendance/AttendanceDashboard.php
+app/Livewire/App/Attendance/PlantelRecorder.php
+app/Livewire/App/Academic/StudentIndex.php
+app/Livewire/App/Academic/StudentForm.php
+```
+
+### 2. The Blade View
+
+Lives in `resources/views/livewire/app/<domain>/` (or `livewire/admin/`). The view is purely presentational — it renders data exposed by the Livewire class and wires user interactions back to Livewire methods. Alpine.js (`x-data`, `x-show`, `x-on`) handles micro-interactions that do not require a server round-trip (modal open/close, tab switching, fullscreen toggle).
+
+```
+resources/views/livewire/app/attendance/attendance-dashboard.blade.php
+resources/views/livewire/app/academic/student-index.blade.php
+```
+
+### 3. The Filter Pipeline
+
+Lives in `app/Filters/App/<Domain>/`. Filter classes implement a pipeline pattern where each filter in the chain receives the Eloquent query builder, applies its condition, and passes it to the next filter. This keeps sortable, searchable data-tables clean: the Livewire component simply passes its filter state to the pipeline, and gets back a scoped query ready to paginate.
+
+```
+app/Filters/App/Attendance/AttendanceFilter.php
+app/Filters/App/Academic/StudentFilter.php
+```
+
+---
+
+## Service Layer
+
+Business logic in ORVIAN lives exclusively in `app/Services/`. This is a hard architectural rule: Livewire components **call** services, and services **interact with** models. Neither components nor models contain domain logic directly.
+
+Services are organized by domain:
+
+### Academic Domain
+| Service | Responsibility |
+|---|---|
+| `StudentService` | CRUD for student records, RNC validation, section assignment |
+| `StudentPhotoService` | Profile photo capture, storage, and cleanup |
+| `TeacherService` | CRUD for teacher records |
+| `TeacherAssignmentService` | Linking teachers to subjects and sections per academic year (`TeacherSubjectSection`) |
+
+### Attendance Domain
+| Service | Responsibility |
+|---|---|
+| `PlantelAttendanceService` | Gate-level attendance recording, tardiness calculation against school shift times, session validation |
+| `ClassroomAttendanceService` | Subject-level roll-call, cross-domain consistency enforcement, pasilleo detection |
+| `ExcuseService` | Justification workflow — submission, review, approval, retroactive attendance correction |
+| `DailySessionManager` | Opening and closing `DailyAttendanceSession` records; prevents attendance recording on days without an open session |
+
+### Communications Domain
+| Service | Responsibility |
+|---|---|
+| `ChatwootService` | HTTP singleton client for the self-hosted Chatwoot instance; creates agents, generates HMAC-SHA256 SSO tokens for direct chat access |
+| `WhatsAppService` | HTTP singleton client for Evolution API; sends text messages to guardian phone numbers (E.164 format) |
+| `AttendanceAlertEvaluator` | Queries monthly absence/tardiness counts per student, compares against `ALERT_ABSENCE_THRESHOLD` / `ALERT_TARDINESS_THRESHOLD`, dispatches `SendAttendanceAlertJob` with weekly anti-spam cache protection |
+
+### Biometric Domain *(optional)*
+| Service | Responsibility |
+|---|---|
+| `FacialApiClient` | Low-level HTTP client for the Python FastAPI microservice; wraps `/enroll`, `/verify`, and `/health` endpoints with timeout handling |
+| `FaceEncodingManager` | Higher-level enrollment and verification logic; stores 128-float face encodings in the `students` table, never persists raw photos |
+
+### Platform Domain
+| Service | Responsibility |
+|---|---|
+| `SchoolService` | School creation, status management, plan assignment |
+| `SchoolRoleService` | Clones global roles (`school_id = null`) into tenant-scoped roles when a school completes onboarding |
+| `UserAvatarService` | Generates initials-based avatars with automatic hex color assignment from institutional palette |
+
+---
+
+## Event-Driven Domain Actions
+
+The school setup flow is the canonical example of ORVIAN's event-driven architecture. It demonstrates three patterns used throughout the codebase: **Actions**, **Events**, and **Listeners**.
+
+### Actions
+
+Actions are single-purpose application-layer classes in `app/Actions/Tenant/`. Each Action does one thing — creates a school, creates a director, completes onboarding — and uses `DB::transaction()` to wrap its database work. Actions are called from Livewire components or controllers; they never call each other in ways that would nest transactions.
+
+Key actions in the onboarding flow:
+
+- **`CompleteOnboardingAction`** — called by the Owner's admin wizard. Creates the school record and the Director user in a single transaction, then calls `ChatwootService::syncUserAsAgent()` via `DB::afterCommit()` to ensure Chatwoot sync only happens after the transaction commits successfully.
+- **`CompleteTenantOnboardingAction`** — called when a new school self-registers. Updates the stub school record created at registration and completes the same onboarding flow.
+- **`CreateSchoolPrincipalAction`** — creates the Director `User`, assigns the `School Principal` role in the tenant's scope, and returns the new user. Intentionally has no transaction of its own; it operates inside the parent action's transaction.
+
+### Events
+
+After the school and director are created, an event is dispatched:
+
+```php
+// app/Events/Tenant/SchoolConfigured.php
+event(new SchoolConfigured($school, $director));
+```
+
+`SchoolConfigured` carries the school and director models. Laravel's event discovery automatically registers all listeners in `app/Listeners/` without manual registration in `EventServiceProvider`.
+
+### Listeners
+
+Three listeners respond to `SchoolConfigured`, executing asynchronously via the database queue:
+
+| Listener | What it does |
+|---|---|
+| `SetupAcademicStructure` | Creates `SchoolSection` records for every active level + grade + parallel combination configured in the wizard |
+| `CreateInitialAcademicYear` | Creates the school's first `AcademicYear` record using the start/end dates collected in the wizard |
+| `AssignInitialRoles` | Confirms the `School Principal` role assignment on the Director user within the tenant scope |
+
+---
+
+## Async Processing
+
+ORVIAN uses **Laravel's database-backed queue** as the default async transport. No Redis or external message broker is required in development.
+
+```ini
+# .env defaults
+QUEUE_CONNECTION=database
+```
+
+Jobs that run asynchronously:
+
+| Job | Trigger | Notes |
+|---|---|---|
+| `ProcessStudentImport` | Excel file uploaded via dropzone | Chunks large Excel files, performs fuzzy section matching, normalizes phone numbers to E.164. Tolerant to section failures — unmatched students go to *Sala de Espera* |
+| `SendAttendanceAlertJob` | `AttendanceAlertEvaluator` dispatch | 3 retries with 60-second backoff. Protected by weekly cache key to prevent spam |
+| Listeners for `SchoolConfigured` | School wizard completion | Academic structure setup runs async to avoid blocking the wizard success screen |
+
+When you run `composer dev`, the queue worker starts automatically as one of the four concurrent processes:
+
+```bash
+php artisan queue:listen --tries=1 --timeout=0
+```
+
+In production, replace this with a supervised `php artisan queue:work` process (Supervisor or systemd) with appropriate `--tries` and `--backoff` settings.
+
+---
+
+## Two Admin Contexts
+
+ORVIAN has two completely separate authenticated contexts, each with its own route group, middleware stack, layout, and Livewire component namespace.
+
+### Platform Admin — `/admin/*`
+
+The **Admin Hub** is accessible only to users with `school_id = null` (Owner, TechnicalSupport, Administrative roles). It is the SaaS management layer:
+
+- Dashboard with MRR metrics, active school counts, and growth charts
+- School management (create, suspend, configure plans)
+- Global plan and feature flag management
+- User management across all schools
+- Laravel Pulse (`/admin/pulse`) and Log Viewer (`/admin/logs`) for observability
+
+The Admin context uses `app/Livewire/Admin/` components, `routes/admin/` route files, and the `EnsureGlobalAdminAccess` middleware.
+
+### School Panel — `/app/*`
+
+The **App Panel** is the tenant-facing interface. Access requires `school_id ≠ null` and resolves the tenant from the authenticated user's `school_id`. This context serves:
+
+- Directors (full school management)
+- Academic Coordinators (attendance oversight, excuse review)
+- Teachers (classroom attendance, grade entry, assignments)
+- Students (personal dashboard, grade consultation, task view)
+
+The App context uses `app/Livewire/App/` components, `routes/app/` route files, and the `IdentifyTenant` middleware that sets the active school scope for the request lifecycle.
+
+<Note>
+  **Never query `Tenant/` models outside of an authenticated tenant context.** Every model in `app/Models/Tenant/` carries a `GlobalScope` that injects `WHERE school_id = ?` using the tenant resolved from the current session. If you query these models in a console command, a queued job, or any context where the tenant middleware has not run, you must explicitly set the tenant scope or you will receive data from all schools (or an empty result set, depending on the model). In commands and jobs that accept a `--school_id` parameter (like `orvian:seed-demo` and `orvian:evaluate-attendance-alerts`), the school is set programmatically before any tenant model queries run.
+</Note>

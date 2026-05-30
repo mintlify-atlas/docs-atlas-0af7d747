@@ -1,0 +1,90 @@
+---
+title: "User Management in the Admin and School Panels"
+sidebarTitle: "User Management"
+description: "Manage platform users and school staff in ORVIAN. Learn about user creation, role assignment, status management, and profile preferences."
+---
+
+ORVIAN has two distinct user management contexts: the global admin panel at `/admin/users` for platform-level users, and the school panel at `/app/users` for tenant staff and students. Both are powered by the `UserIndex` Livewire DataTable component but differ in scope, available roles, and supported operations.
+
+## Admin User Management
+
+The admin user list is rendered by `App\Livewire\Admin\Users\UserIndex` at `/admin/users` (requires `global_users.manage` permission). It exclusively shows users with `school_id = null` — these are platform-level accounts such as Owners, Technical Support staff, and Administrators who operate outside any single school context.
+
+Key capabilities:
+
+- **Filterable** by role, status, and a text search field.
+- **Soft delete and restoration** — the `trashed` filter toggles between active users (default) and soft-deleted users (`only`). Deleted users can be restored in place.
+- **Role assignment** is scoped to global roles only. Template roles (`School Principal`, `Teacher`, `Secretary`, `Student`, `Staff`) are explicitly excluded from the admin role selector to prevent accidental assignment outside a tenant context.
+- Role is assigned with `setPermissionsTeamId(null)` to ensure permissions operate in the global scope.
+
+## School User Management
+
+The school user list is rendered by `App\Livewire\App\Users\UserIndex` at `/app/users` (requires `users.view` permission). It is scoped to the current school via the `SchoolScope` global scope applied to the `User` model.
+
+This panel shows both staff members (teachers, secretaries, administrators) and students enrolled in the school. Users are filterable by role and status. Roles available in the selector are those belonging to the current tenant (`school_id` of the active school), ensuring cross-school role bleed is impossible.
+
+## User Statuses
+
+ORVIAN tracks two categories of user state on the `users.status` column:
+
+| Status | Description |
+|--------|-------------|
+| `active` | Fully operational account with login access |
+| `inactive` | Default state for auto-generated student accounts. Login is restricted until the Director enables the account. |
+| `online` | User is currently in an active session |
+| `away` | User has been inactive for a period; set automatically by the scheduled `orvian:update-user-status` command |
+| `busy` | Manually set by the user to indicate unavailability |
+| `offline` | User has no active session |
+
+The `orvian:update-user-status` Artisan command runs on a schedule and marks users who have been inactive past a configurable threshold as `away`.
+
+## User Presence
+
+The presence system provides real-time visibility into who is currently active on the platform. Status is shown as a colored dot rendered by the `x-ui.avatar` Blade component via its `showStatus` prop:
+
+| Status | Dot Color |
+|--------|-----------|
+| `online` | Green (`bg-green-500`) |
+| `away` | Amber (`bg-amber-400`) |
+| `busy` | Red (`bg-red-500`) |
+| `offline` / other | Slate (`bg-slate-400`) |
+
+Users can manually change their presence status at any time from the dropdown menu in the navbar. Status also changes automatically:
+
+- **On login** → set to `online`
+- **On logout** → set to `offline`
+- **On inactivity** → the `orvian:update-user-status` scheduled command transitions `online` users to `away`
+
+## Profile and Preferences
+
+Every user has access to the `ProfileModal` Livewire component, which is embedded directly in both the `app` and `admin` layouts. It opens as a modal overlay from the avatar dropdown in the navbar — no separate page navigation required.
+
+Preferences are persisted as a JSON object in the `users.preferences` column and are read/written through `ProfileModal::savePreferences()`. The following preferences are supported:
+
+| Preference Key | Type | Description |
+|----------------|------|-------------|
+| `theme` | `string` | UI theme: `light`, `dark`, or `system`. Applied on page load by the `x-ui.theme-init` synchronous script to prevent any flash of incorrect theme. |
+| `sidebar_collapsed` | `boolean` | Whether the admin panel sidebar starts collapsed. Read from DB on load — no `localStorage` dependency. |
+| `login_version` | `string` | Which login interface to render: `v2` (architectural two-column design) or `v1` (classic layout). Synced as a browser cookie on save. |
+| `audio_feedback` | `boolean` | Whether attendance registration beeps are enabled (applies to QR and facial recognition kiosk modes). Default: `true`. |
+
+<Note>
+  The `login_version` preference controls which login screen design a user sees. `v2` is the current architectural layout — a two-column design with an editorial branding panel on the left and a Line UI form on the right. `v1` is the classic Breeze-style single-column layout, preserved for users who prefer a simpler interface. The preference is saved to the database **and** synced as the `orvian_login_version` cookie (valid for 1 year via `Cookie::queue()`), so it persists even before the user logs in. Each device or browser maintains its own cookie independently.
+</Note>
+
+## Role Assignment
+
+Roles are assigned from the user creation or edit form. In the admin panel, only non-template global roles are shown. In the school panel, the role list is automatically scoped to roles belonging to the current school (roles with the matching `school_id`).
+
+Student accounts created via the SIGERD import or the enrollment form do not require manual role assignment — the `StudentObserver` listens to the `created` event on the `Student` model and automatically assigns the `Student` role within the tenant scope. The generated user account starts with `status = inactive` until the Director activates it.
+
+## Roles Management
+
+Role management is available at `/admin/roles` (global context) and `/app/roles` (school context). Both routes use the `RoleIndex` Livewire component and share the `RoleForm` and `RolePermissions` components under `App\Livewire\Shared\Roles\`.
+
+Features available in the role manager:
+
+- **Color-coded role badges** — each role has a `bg_color` and `text_color` hex value, edited with an inline hex color picker. The badge preview updates in real time.
+- **System role protection** — roles with `is_system = true` cannot be deleted. They can be edited for color and permissions, but the delete action is blocked.
+- **Role duplication** — the `duplicate()` action clones a role with all its current permissions, creating a new editable copy.
+- **Permission matrix** — accessible at `/admin/roles/{role}/permissions` (and `/app/roles/{role}/permissions`). Permissions are organized into tabs by `PermissionGroup`. Each tab provides **bulk select** and **bulk deselect** actions to manage all permissions in a group at once. The `context` field on `PermissionGroup` (`global` or `tenant`) ensures admin-only permissions do not appear in the school panel matrix and vice versa.

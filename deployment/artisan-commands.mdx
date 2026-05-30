@@ -1,0 +1,301 @@
+---
+title: "ORVIAN Artisan Commands Reference"
+sidebarTitle: "Artisan Commands"
+description: "Reference for all custom php artisan commands in ORVIAN: demo seeding, geo data import, alert evaluation, and user status management."
+---
+
+ORVIAN registers several custom Artisan commands under the `orvian:` namespace for data management, geographic data import, attendance alert processing, and platform maintenance. Each command is described below with its full signature, all available options, and a usage example.
+
+## `orvian:seed-demo`
+
+**Class:** `App\Console\Commands\SeedDemoSchoolData`
+
+Generates a complete set of realistic demo data for a given school. This includes students distributed evenly across active sections, three demo teachers each assigned a subject, `TeacherSubjectSection` records linking teachers to every active section, a configurable window of historical daily attendance sessions (weekdays only), plantel and classroom attendance records with realistic status distributions, and three pre-approved attendance excuses.
+
+<Warning>
+The `--fresh` flag **permanently deletes** all existing `DailyAttendanceSession`, `PlantelAttendanceRecord`, and `ClassroomAttendanceRecord` rows for the target school before generating new data. This action cannot be undone. **Never use `--fresh` on a school with real attendance history.**
+</Warning>
+
+**Signature:**
+```
+php artisan orvian:seed-demo --school_id= [--students=75] [--days=30] [--fresh]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--school_id` | integer | *(required)* | ID of the school to populate. The command fails immediately if this option is omitted or the school is not found. |
+| `--students` | integer | `75` | Number of students to create. Clamped to the range 25–150. Students are distributed as evenly as possible across all active sections. Skipped if the school already has existing students. |
+| `--days` | integer | `30` | Number of days of historical attendance to generate, counting back from today. Weekend days are automatically skipped. Clamped to 1–90. |
+| `--fresh` | flag | `false` | When set, deletes all existing attendance data for the school before seeding. See the warning above. |
+
+The seeder uses `Model::insert()` in chunks of 200 rows for bulk performance. Eloquent observers and events are **not** fired for inserted records.
+
+**Demo subjects created:**
+
+| Subject | Code | Color |
+|---|---|---|
+| Lengua Española | `LEN` | `#3b82f6` |
+| Matemáticas | `MAT` | `#10b981` |
+| Ciencias Sociales | `SOC` | `#f59e0b` |
+
+**Plantel attendance distribution:**
+
+| Status | Probability |
+|---|---|
+| Present | 80% |
+| Late | 10% |
+| Absent | 5% |
+| Excused | 5% |
+
+**Usage examples:**
+
+```bash
+# Seed school ID 3 with defaults (75 students, 30 days)
+php artisan orvian:seed-demo --school_id=3
+
+# Seed with 100 students and 60 days of history
+php artisan orvian:seed-demo --school_id=3 --students=100 --days=60
+
+# Reset attendance data and re-seed (development only)
+php artisan orvian:seed-demo --school_id=3 --fresh
+```
+
+---
+
+## `orvian:evaluate-attendance-alerts`
+
+**Class:** `App\Console\Commands\EvaluateAttendanceAlertsCommand`
+
+Iterates over all active students (or a single school's students when `--school` is provided), evaluates their current-month absence and tardiness counts against the thresholds defined in `ALERT_ABSENCE_THRESHOLD` and `ALERT_TARDINESS_THRESHOLD`, and dispatches `SendAttendanceAlertJob` for every student who exceeds a threshold and has a guardian phone number on record.
+
+**Signature:**
+```
+php artisan orvian:evaluate-attendance-alerts [--school=]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--school` | integer | *(optional)* | Restrict evaluation to students belonging to this school ID. When omitted, all active students across every school are evaluated. |
+
+**Schedule:** Runs automatically every day at **16:00** via `routes/console.php`:
+
+```php
+Schedule::command('orvian:evaluate-attendance-alerts')
+    ->dailyAt('16:00')
+    ->withoutOverlapping()
+    ->description('Evalúa alertas de asistencia y notifica tutores por WhatsApp');
+```
+
+`withoutOverlapping()` prevents a second instance from starting if a previous run is still processing a large dataset.
+
+**Anti-spam:** The underlying `AttendanceAlertEvaluator` service uses a weekly cache key per student to ensure guardians do not receive duplicate WhatsApp messages within the same week, even if the command runs multiple times.
+
+Students who are missing a `tutor_phone` value are skipped and their IDs are collected into a consolidated `Log::warning()` entry at the end of the run.
+
+**Usage examples:**
+
+```bash
+# Evaluate all schools
+php artisan orvian:evaluate-attendance-alerts
+
+# Evaluate only school ID 5
+php artisan orvian:evaluate-attendance-alerts --school=5
+```
+
+---
+
+## `orvian:cleanup-stubs`
+
+**Class:** `App\Console\Commands\CleanupStubSchools`
+
+Removes stale "stub" schools and their associated users. A stub school is created automatically when a new director self-registers but has not yet completed the onboarding wizard. Each stub record carries a `stub_expires_at` timestamp; this command deletes all expired stubs (`is_configured = false` and `stub_expires_at` in the past) inside a single database transaction, including any `User` rows linked to the school.
+
+**Signature:**
+```
+php artisan orvian:cleanup-stubs
+```
+
+*(No options or arguments.)*
+
+**Schedule:** Runs automatically **every day at midnight** via `routes/console.php`:
+
+```php
+Schedule::command('orvian:cleanup-stubs')->daily();
+```
+
+**Usage:**
+
+```bash
+php artisan orvian:cleanup-stubs
+```
+
+---
+
+## `orvian:import-geo`
+
+**Class:** `App\Console\Commands\ImportGeoData`
+
+Imports the complete Dominican Republic geographic hierarchy from the [`DannyFeliz/Datos-Rep-Dom`](https://github.com/DannyFeliz/Datos-Rep-Dom) GitHub repository. Data is fetched over HTTP and upserted into the following tables:
+
+| Level | Model | Records |
+|---|---|---|
+| Provinces | `Geo\Province` | 32 provinces |
+| Municipalities | `Geo\Municipality` | All municipalities linked to their province |
+| Districts | `Geo\District` | Municipal districts linked to their municipality |
+| Sections | `Geo\Section` | Geographic sections within districts/municipalities |
+| Neighborhoods | `Geo\Neighborhood` | Barrios linked to their section |
+
+**Signature:**
+```
+php artisan orvian:import-geo
+```
+
+*(No options or arguments.)*
+
+This command is **idempotent** — it uses `updateOrCreate()` on every record, so it is safe to re-run if the upstream data source is updated.
+
+**Usage:**
+
+```bash
+php artisan orvian:import-geo
+```
+
+Run this command **once during initial platform setup**, before running `orvian:import-educational-geo`.
+
+---
+
+## `orvian:import-educational-geo`
+
+**Class:** `App\Console\Commands\ImportEducationalGeoData`
+
+Imports MINERD (Ministerio de Educación de la República Dominicana) educational geography from the [`Elian-D/minerd-territorial-data`](https://github.com/Elian-D/minerd-territorial-data) repository. Creates or updates two entity types:
+
+| Entity | Model | Source file |
+|---|---|---|
+| Regional Educations | `Geo\RegionalEducation` | `json/regions.json` |
+| Educational Districts | `Geo\EducationalDistrict` | `json/school_districts.json` |
+
+Each `EducationalDistrict` is linked to its parent `RegionalEducation` via `regional_education_id`.
+
+**Signature:**
+```
+php artisan orvian:import-educational-geo
+```
+
+*(No options or arguments.)*
+
+**Usage:**
+
+```bash
+php artisan orvian:import-educational-geo
+```
+
+Run this command **after** `orvian:import-geo` during initial platform setup. Both geo commands are one-time operations and should not be included in routine scheduled jobs.
+
+---
+
+## `orvian:update-user-status`
+
+**Class:** `App\Console\Commands\UpdateUserStatus`
+
+Transitions users from `online` to `away` when their `last_login_at` timestamp is more than **15 minutes** in the past. This keeps the platform's presence indicators accurate without relying on WebSocket disconnection events.
+
+**Signature:**
+```
+php artisan orvian:update-user-status
+```
+
+*(No options or arguments.)*
+
+**Schedule:** Runs automatically **every 5 minutes** via `routes/console.php`:
+
+```php
+Schedule::command('orvian:update-user-status')->everyFiveMinutes();
+```
+
+**Usage:**
+
+```bash
+php artisan orvian:update-user-status
+```
+
+---
+
+## Composer Scripts
+
+Three convenience scripts are defined in `composer.json` and wrap common multi-step workflows:
+
+### `composer setup`
+
+Full first-time project bootstrap. Runs the following steps in sequence:
+
+1. `composer install` — installs all PHP dependencies
+2. Copies `.env.example` to `.env` if `.env` doesn't exist
+3. `php artisan key:generate` — generates the `APP_KEY`
+4. `php artisan migrate --force` — runs all migrations
+5. `npm install` — installs Node dependencies
+6. `npm run build` — compiles and bundles frontend assets
+
+```bash
+composer setup
+```
+
+### `composer dev`
+
+Starts all development services **concurrently** using `npx concurrently`. Kills all processes if any one of them exits:
+
+| Process | Command | Color |
+|---|---|---|
+| server | `php artisan serve` | Blue |
+| queue | `php artisan queue:listen --tries=1 --timeout=0` | Purple |
+| logs | `php artisan pail --timeout=0` | Pink |
+| vite | `npm run dev` | Orange |
+
+```bash
+composer dev
+```
+
+### `composer test`
+
+Clears the configuration cache, then runs the full Pest test suite:
+
+1. `php artisan config:clear` — ensures tests use fresh config
+2. `php artisan test` — runs all Pest feature and unit tests
+
+```bash
+composer test
+```
+
+---
+
+## Useful Built-in Artisan Commands
+
+Standard Laravel Artisan commands frequently used during ORVIAN development and deployment:
+
+```bash
+# Run all pending migrations
+php artisan migrate
+
+# Drop all tables, re-run migrations, and seed
+php artisan migrate:fresh --seed
+
+# Run all database seeders
+php artisan db:seed
+
+# Run a specific seeder class
+php artisan db:seed --class=SomeSeeder
+
+# Start the queue worker (production-suitable, no timeout)
+php artisan queue:listen --tries=1 --timeout=0
+
+# Clear individual framework caches
+php artisan config:clear
+php artisan route:clear
+php artisan view:clear
+
+# Invalidate the cached ORVIAN version string after a deployment
+php artisan cache:forget orvian.app_version
+
+# Run a single test by name filter
+php artisan test --filter=SomeTestName
+```

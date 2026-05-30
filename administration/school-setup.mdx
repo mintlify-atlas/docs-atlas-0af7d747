@@ -1,0 +1,69 @@
+---
+title: "School Onboarding and Settings Configuration"
+sidebarTitle: "School Setup"
+description: "Walk through ORVIAN's onboarding wizard to configure a new school, set academic structure, select a plan, and complete tenant activation."
+---
+
+ORVIAN supports two onboarding paths: the platform Owner creating a school directly from the admin panel, and a school registering itself via the public sign-up page. Both flows ultimately lead into a wizard that configures the school's academic structure, geographic data, and initial Director account. When the wizard completes, a set of listeners fires automatically to build the full tenant environment from scratch.
+
+## Owner-Initiated Setup
+
+The Owner accesses `/admin/setup`, which renders the `SchoolWizard` Livewire component — a 5-step guided form backed by `BaseSchoolWizard` inheritance.
+
+| Step | Content |
+|------|---------|
+| **1 — School Data** | Institution name, SIGERD code, phone, management regime, and modality |
+| **2 — Geographic Info** | Province, municipality, regional education authority, and educational district (cascaded selectors) |
+| **3 — Academic Structure** | Education levels, grades, cycles, parallels, and optional technical titles for upper-secondary |
+| **4 — Plan Selection** | Choose a subscription plan from the active plan catalog (rendered with `x-ui.plan-card`) |
+| **5 — Review & Confirm** | Summary of all entered data before final submission |
+
+On confirmation, `CompleteOnboardingAction` is called. It creates the school record, provisions the Director user account, and fires the `SchoolConfigured` event inside a database transaction.
+
+## Self-Registration Flow
+
+A school administrator visits `/sign-up`. The `RegisterUser` Livewire component creates a **stub school** — a minimal school record with no academic structure yet. The administrator is then directed to the `TenantSetupWizard`, a 4-step variant of the same wizard (Steps 1–3 plus review; plan assignment is omitted as it is handled by the Owner later).
+
+On completion, `CompleteTenantOnboardingAction` updates the stub school with the wizard data and fires `SchoolConfigured` using the same event pipeline.
+
+## What Happens on Completion
+
+When `SchoolConfigured` fires, four listeners execute in sequence via Laravel's event discovery (no manual registration in `EventServiceProvider` is needed):
+
+- **`SetupAcademicStructure`** — reads the wizard configuration and creates all `SchoolSection` records for every configured level, grade, cycle, and parallel.
+- **`CreateInitialAcademicYear`** — creates the first `AcademicYear` record using the start and end dates provided during the wizard.
+- **`AssignInitialRoles`** — confirms the `School Principal` role assignment for the Director within the tenant scope (`school_id`).
+- **`ChatwootService::syncUserAsAgent()`** — registers the Director as a Chatwoot agent so they can access the messaging center. This call is wrapped in `DB::afterCommit` to ensure it only runs after the outer transaction commits successfully, avoiding nested-transaction callback issues.
+
+## School Settings
+
+After onboarding, Directors manage their school's institutional profile at `/app/settings/school` — rendered by the `SchoolSettings` Livewire component (`App\Livewire\App\Settings\SchoolSettings`). This page requires the `settings.view` or `settings.update` permission.
+
+The settings form covers:
+
+- **School logo** — upload or replace the institutional logo (JPG, PNG, WEBP, max 2 MB). The previous file is deleted from `storage/app/public/schools/{id}/branding/` before the new one is stored.
+- **Institutional data** — name, SIGERD code, phone number, address detail, management regime (`regimen_gestion`), and modality.
+- **Geographic cascade selectors** — powered by the `GeographicSelects` component. Selecting a province resets the municipality; selecting a regional education authority resets the educational district.
+- **Active academic year** — displayed as a read-only field. The value is the name of the `AcademicYear` where `is_active = true` for the current school.
+
+The same logo upload and location saving logic is also available to the Owner from the admin detail view at `/admin/schools/{school}` (`SchoolShow` component).
+
+## School Status
+
+Every school has two independent boolean status flags:
+
+| Flag | Meaning |
+|------|---------|
+| `is_active` | Whether the school is fully operational in the platform. Set to `true` after successful onboarding. |
+| `is_suspended` | Whether the school has been suspended due to payment issues. A school can be active but suspended. |
+
+The `EnsureSchoolIsActive` middleware intercepts every request to `/app/*` routes and enforces these rules:
+
+- If `is_suspended = true` → redirect to the `suspended.notice` view.
+- If `is_active = false` → redirect to the `inactive.notice` view.
+
+The Owner can toggle both flags from `/admin/schools/{school}` (`SchoolShow`) or from the list at `/admin/schools` (`SchoolIndex`). ORVIAN enforces a business rule: **a school must be suspended before it can be deactivated**. Attempting to deactivate an active, non-suspended school returns a validation error notification.
+
+<Tip>
+  ORVIAN integrates Google Maps in the school profile page (`SchoolShow`). Owners can drag a map pin to set the school's precise coordinates, which are saved via `saveLocation($lat, $lng)`. Requires `GOOGLE_MAPS_API_KEY` to be set in your `.env`. If coordinates are `null` or the API key is missing, the map section renders a graceful visual fallback without breaking the page.
+</Tip>

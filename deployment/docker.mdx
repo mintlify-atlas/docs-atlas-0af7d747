@@ -1,0 +1,151 @@
+---
+title: "Deploying ORVIAN with Docker and Laravel Sail"
+sidebarTitle: "Docker"
+description: "ORVIAN uses Laravel Sail for Docker-based development and production deployment. Run MySQL, Redis, Mailpit, and phpMyAdmin with a single compose command."
+---
+
+ORVIAN ships with a `compose.yaml` powered by Laravel Sail using a **PHP 8.5 runtime**. The stack bundles everything you need: the Laravel application server, MySQL 8.4 as the primary database, Redis for cache and queues, Mailpit for local email testing, and phpMyAdmin for database inspection — all wired together in a single Bridge network called `sail`.
+
+## Services
+
+The following services are defined in `compose.yaml`:
+
+| Service | Image | Exposed Port(s) | Purpose |
+|---|---|---|---|
+| `laravel.test` | `sail-8.5/app` | `${APP_PORT:-80}` · `${VITE_PORT:-5173}` | Laravel application + Vite HMR |
+| `mysql` | `mysql:8.4` | `${FORWARD_DB_PORT:-3306}` | Primary relational database |
+| `mailpit` | `axllent/mailpit:latest` | `${FORWARD_MAILPIT_PORT:-1025}` (SMTP) · `${FORWARD_MAILPIT_DASHBOARD_PORT:-8025}` (dashboard) | Local email capture and inspection |
+| `phpmyadmin` | `phpmyadmin:latest` | `8080` | MySQL web UI (connects to the `mysql` service) |
+| `redis` | `redis:alpine` | `${FORWARD_REDIS_PORT:-6379}` | Cache, sessions, and queues |
+
+The `laravel.test` container depends on `mysql`, `mailpit`, and `redis`. Both `mysql` and `redis` include health checks that retry up to 3 times before the app container is considered ready.
+
+<Note>
+The `laravel.test` service declares an `extra_hosts` entry that maps `host.docker.internal` to the host gateway. This allows the container to reach services running directly on your host machine — most notably the optional Python facial-recognition microservice (`FACIAL_API_URL=http://host.docker.internal:8001`) that runs outside the Compose network.
+</Note>
+
+## First-Time Setup with Docker
+
+<Steps>
+  <Step title="Copy the environment file">
+    ```bash
+    cp .env.example .env
+    ```
+    The `.env.example` already contains sensible defaults for a Docker environment. You only need to fill in the values specific to your installation.
+  </Step>
+
+  <Step title="Configure the database connection">
+    Open `.env` and set the MySQL credentials. These values are passed directly to the `mysql` container via its `MYSQL_*` environment variables:
+
+    ```env
+    DB_CONNECTION=mysql
+    DB_HOST=mysql
+    DB_PORT=3306
+    DB_DATABASE=orvian
+    DB_USERNAME=sail
+    DB_PASSWORD=secret
+    ```
+
+    Use `DB_HOST=mysql` — the service name — not `127.0.0.1`, so that Laravel resolves the container hostname correctly within the Compose network.
+  </Step>
+
+  <Step title="Configure Redis for production-like behaviour">
+    Switch all real-time drivers to Redis so the queue worker, session store, and cache all share the same Redis instance:
+
+    ```env
+    REDIS_HOST=redis
+    REDIS_PORT=6379
+    CACHE_STORE=redis
+    SESSION_DRIVER=redis
+    QUEUE_CONNECTION=redis
+    ```
+  </Step>
+
+  <Step title="Start all services">
+    If Sail's vendor binary is already available:
+
+    ```bash
+    ./vendor/bin/sail up -d
+    ```
+
+    If you haven't run `composer install` yet (fresh clone), install dependencies on the host first, then start Sail:
+
+    ```bash
+    composer install
+    ./vendor/bin/sail up -d
+    ```
+
+    Alternatively, if you have Docker Compose available directly:
+
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+
+  <Step title="Run migrations and seed the database">
+    ```bash
+    ./vendor/bin/sail artisan migrate --seed
+    ```
+
+    This creates all tables and populates the initial platform data (roles, permissions, plan records, and the default superadmin account).
+  </Step>
+
+  <Step title="Build the frontend assets">
+    ```bash
+    ./vendor/bin/sail npm run build
+    ```
+
+    For active development with hot-module replacement, use `npm run dev` instead. Vite's dev server is exposed on port `5173` by default.
+  </Step>
+</Steps>
+
+## Development Without Docker
+
+ORVIAN defaults to **SQLite** in `.env.example` (`DB_CONNECTION=sqlite`), making local development possible without running any database server. Laravel creates the SQLite file at `database/database.sqlite` automatically.
+
+To start every development process concurrently with a single command:
+
+```bash
+composer dev
+```
+
+This launches four parallel processes via `concurrently`:
+
+- `php artisan serve` — Laravel development server
+- `php artisan queue:listen --tries=1 --timeout=0` — Queue worker
+- `php artisan pail --timeout=0` — Real-time log viewer
+- `npm run dev` — Vite HMR dev server
+
+This mode is the recommended setup for contributors who want a fast feedback loop without Docker overhead.
+
+## Production Considerations
+
+When deploying ORVIAN to a production server, keep the following in mind:
+
+- **Set `APP_ENV=production` and `APP_DEBUG=false`** — never expose debug output or stack traces to end users.
+- **Use MySQL or MariaDB** (`DB_CONNECTION=mysql`) — SQLite is unsuitable for concurrent multi-tenant workloads.
+- **Use Redis for all real-time drivers** — set `CACHE_STORE=redis`, `SESSION_DRIVER=redis`, and `QUEUE_CONNECTION=redis` for reliability and horizontal scalability.
+- **Run a supervised queue worker** — use `php artisan queue:work` under Supervisor, systemd, or a similar process manager. For simpler single-server setups, `QUEUE_CONNECTION=database` is an acceptable alternative.
+- **HTTPS is required** — the biometric scanner feature uses the browser's `getUserMedia()` API to access the webcam. All modern browsers restrict this API to secure origins (HTTPS or `localhost`).
+- **Set `APP_URL` correctly** — this value is used to generate signed URLs, password-reset links, and QR code endpoints. An incorrect `APP_URL` will break these features.
+- **Cache framework bootstrap artifacts** for maximum throughput:
+  ```bash
+  php artisan config:cache
+  php artisan route:cache
+  php artisan view:cache
+  ```
+- **Invalidate the version cache** after each deployment so the UI reflects the correct version number:
+  ```bash
+  php artisan cache:forget orvian.app_version
+  ```
+
+## Volumes
+
+Two named Docker volumes persist data between container restarts:
+
+| Volume | Mounted at | Purpose |
+|---|---|---|
+| `sail-mysql` | `/var/lib/mysql` | MySQL data directory — all database files |
+| `sail-redis` | `/data` | Redis persistence (RDB snapshots) |
+
+Both volumes use the `local` driver and are managed by Docker. Deleting these volumes (`docker volume rm`) is permanent — make sure to take database backups before pruning them.

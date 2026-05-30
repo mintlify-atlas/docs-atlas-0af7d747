@@ -1,0 +1,244 @@
+---
+title: "Roles and Permissions: RBAC in ORVIAN"
+sidebarTitle: "Roles & Permissions"
+description: "ORVIAN uses Spatie Laravel Permission with per-tenant role cloning. Explore roles, permission groups, and how to control access in the school panel."
+---
+
+ORVIAN's access control is built on [`spatie/laravel-permission`](https://spatie.be/docs/laravel-permission) with **`teams = true`** enabled. In this configuration the "team" concept maps 1-to-1 with `school_id`, meaning every role and permission check is automatically scoped to the school that owns the current request. **Global roles** — those held by platform administrators — have `school_id = null` and exist outside any team. **Tenant roles** are cloned per school at the end of the onboarding wizard so that each school starts with an independent, customisable set of roles and permissions.
+
+---
+
+## Global Roles (Platform Admin)
+
+Global roles are held by users whose `school_id` is `null`. They operate entirely within the `/admin/*` route group and are never visible to school-level users.
+
+| Role | Purpose |
+|---|---|
+| **Owner** | Full platform access. Holds the `viewPulse` gate (grants access to Laravel Pulse monitoring via `Gate::define('viewPulse', fn($user) => $user->hasRole('Owner'))`). Can impersonate any school. |
+| **TechnicalSupport** | Read/write access to school configuration and user management across all tenants. Can enter a school's context via `session('impersonated_school_id')`. |
+| **Administrative** | Platform-level administrative access for operational tasks (billing, plan management, etc.). |
+
+Global roles are defined in seeders and are never cloned. Because `school_id = null` on these role records, Spatie's team isolation keeps them completely separate from any school's role table.
+
+---
+
+## Tenant Roles (School Panel)
+
+Tenant roles are created per school by `SchoolRoleService::seedDefaultRoles()` during onboarding. Each role is cloned from a **global reference role** (also `school_id = null`) so every school starts with the same baseline permissions. Future customisation per school (adding/removing permissions from a role) does not affect any other school.
+
+The base roles seeded for every school are:
+
+| Role | Typical user |
+|---|---|
+| **School Principal** | The school Director — broadest permissions within the school panel |
+| **Academic Coordinator** | Manages academic structure, enrolment, and teacher assignments |
+| **Teacher** | Classroom attendance, roll call, subject-level views |
+| **Secretary** | Administrative staff — student records, excuses |
+| **Student** | Minimal read-only access to personal records |
+| **Staff** | General support staff |
+
+The seeding process temporarily sets `setPermissionsTeamId(null)` to load the global reference roles (bypassing team scoping), then switches to `setPermissionsTeamId($school->id)` to create the tenant copies and sync their permissions:
+
+```php
+// app/Services/School/SchoolRoleService.php
+public function seedDefaultRoles(School $school): void
+{
+    // Phase 1 — READ: disable team filter to see global reference roles
+    setPermissionsTeamId(null);
+
+    $globalRoles = Role::withoutGlobalScope(SchoolScope::class)
+        ->whereIn('name', self::BASE_ROLES)
+        ->whereNull('school_id')
+        ->with('permissions')
+        ->get();
+
+    // Phase 2 — WRITE: activate school's team scope
+    setPermissionsTeamId($school->id);
+
+    foreach (self::BASE_ROLES as $roleName) {
+        $globalRole = $globalRoles->firstWhere('name', $roleName);
+        $color      = $globalRole ? $globalRole->color : '#64748B';
+
+        $tenantRole = Role::firstOrCreate(
+            ['name' => $roleName, 'guard_name' => 'web', 'school_id' => $school->id],
+            ['color' => $color, 'is_system' => true]
+        );
+
+        if ($globalRole && $tenantRole->wasRecentlyCreated) {
+            $this->clonePermissions($globalRole, $tenantRole);
+        }
+    }
+}
+```
+
+Role display names shown in the UI (badges, role pickers) are resolved through the `roles.{name}.name` translation key via the `$role->display_name` accessor.
+
+---
+
+## Permission Groups
+
+Permissions are organised into **`PermissionGroup`** records. A group has:
+
+- `name` — human-readable label (e.g., `"Asistencia Plantel"`)
+- `slug` — machine key used for translation lookups (`permissions.groups.{slug}`)
+- `context` — either `'global'` or `'tenant'`
+- `order` — integer for display ordering in the role editor
+
+```php
+// app/Models/PermissionGroup.php
+const CONTEXT_GLOBAL = 'global';
+const CONTEXT_TENANT = 'tenant';
+
+// Scopes
+->scopeTenant($query)  // where('context', 'tenant')
+->scopeGlobal($query)  // where('context', 'global')
+->scopeOrdered($query) // orderBy('order')
+```
+
+Each `Permission` model extends Spatie's base and adds a `group_id` foreign key, exposing a `group()` `BelongsTo` relation. The `Permission::roles()` relation is overridden to call `->withoutGlobalScope(SchoolScope::class)`, ensuring the Spatie permission cache can resolve global roles (like Owner) even when a tenant scope is active.
+
+---
+
+## Key Attendance Permissions
+
+These permissions are checked on routes under `/app/attendance/*`:
+
+| Permission name | Description |
+|---|---|
+| `attendance_plantel.view` | View the campus-wide attendance dashboard and session history |
+| `attendance_plantel.record` | Record an individual campus entry via QR scanner |
+| `attendance_plantel.open_session` | Open or close the daily campus attendance session; access manual entry |
+| `attendance_plantel.reports` | Access attendance analytics and export reports |
+| `attendance_plantel.verify` | Audit completed sessions (`/attendance/audit/{sessionId}`) |
+| `attendance_classroom.record` | Run a classroom roll-call session (teacher's pase de lista) |
+| `attendance_classroom.view` | View classroom attendance history for assigned sections |
+| `excuses.view` | View and manage student attendance excuse records |
+
+---
+
+## Key Academic Permissions
+
+These permissions gate routes under `/app/academic/*`:
+
+| Permission name | Description |
+|---|---|
+| `students.view` | List and view student profiles |
+| `students.create` | Create a new student record |
+| `students.edit` | Edit an existing student; access the enrolment hub and biometric kiosk |
+| `students.import` | Import students via Excel wizard; access the print/QR manager |
+| `teachers.view` | List and view teacher profiles |
+| `teachers.create` | Create a new teacher record |
+| `teachers.edit` | Edit an existing teacher profile |
+| `teachers.assign_subjects` | Manage a teacher's subject and section assignments |
+| `settings.view` | View academic structure (courses, sections, shifts) |
+| `settings.update` | Modify academic structure configuration |
+
+---
+
+## Checking Permissions in Routes
+
+Route-level permission gates use Laravel's built-in `can:` middleware alias, which delegates to Spatie under the hood. The team ID is already set by `IdentifyTenant` before route matching, so the check is automatically scoped to the current school.
+
+**Attendance routes:**
+
+```php
+// routes/app/attendance.php
+Route::get('/dashboard', AttendanceDashboard::class)
+    ->middleware('can:attendance_plantel.reports')
+    ->name('dashboard');
+
+Route::get('/reports', AttendanceReports::class)
+    ->middleware('can:attendance_plantel.reports')
+    ->name('reports');
+
+Route::middleware('can:attendance_plantel.record')->group(function () {
+    Route::get('/scanner', AttendanceScanner::class)->name('scanner');
+});
+
+Route::middleware('can:attendance_plantel.open_session')->group(function () {
+    Route::get('/session', AttendanceSessionManager::class)->name('session');
+    Route::get('/manual', ManualAttendance::class)->name('manual');
+});
+
+Route::get('/audit/{sessionId}', AttendanceAudit::class)
+    ->middleware('can:attendance_plantel.verify')
+    ->name('audit');
+
+Route::get('/excuses', ExcuseIndex::class)
+    ->middleware('can:excuses.view')
+    ->name('excuses.index');
+```
+
+**Academic routes:**
+
+```php
+// routes/app/academic.php
+Route::middleware('can:students.view')->group(function () {
+    Route::get('/students', StudentIndex::class)->name('students.index');
+    Route::get('/students/create', StudentForm::class)
+        ->middleware('can:students.create')
+        ->name('students.create');
+    Route::get('/students/import', StudentImportWizard::class)
+        ->middleware('can:students.import')
+        ->name('students.import');
+    Route::get('/students/{student}/edit', StudentForm::class)
+        ->middleware('can:students.edit')
+        ->name('students.edit');
+});
+
+Route::middleware('can:teachers.view')->group(function () {
+    Route::get('/teachers', TeacherIndex::class)->name('teachers.index');
+    Route::get('/teachers/create', TeacherForm::class)
+        ->middleware('can:teachers.create')
+        ->name('teachers.create');
+    Route::get('/teachers/{teacher}/assignments', TeacherAssignments::class)
+        ->middleware('can:teachers.assign_subjects')
+        ->name('teachers.assignments');
+});
+```
+
+---
+
+## The `trans_permission()` Helper
+
+Technical permission names like `attendance_plantel.open_session` are not shown directly to end users. The `trans_permission()` global helper (autoloaded from `app/Helpers/PermissionHelper.php`) translates them to human-readable labels using the `lang/es/permissions.php` language file:
+
+```php
+// app/Helpers/PermissionHelper.php
+function trans_permission(string $name, string $key = 'label'): string
+{
+    // Builds: "permissions.attendance_plantel.open_session.label"
+    $langKey = "permissions.{$name}.{$key}";
+
+    if (Lang::has($langKey)) {
+        return __($langKey);
+    }
+
+    // Graceful fallback: "Attendance plantel open session"
+    return ucfirst(str_replace(['.', '_'], ' ', $name));
+}
+```
+
+**Parameters:**
+
+| Parameter | Values | Description |
+|---|---|---|
+| `$name` | e.g., `'students.view'` | The Spatie permission name |
+| `$key` | `'label'` (default) or `'description'` | Which translation string to return |
+
+**Usage examples:**
+
+```blade
+{{-- In Blade --}}
+{{ trans_permission('attendance_plantel.record') }}
+{{-- → "Registrar asistencia de plantel" --}}
+
+{{ trans_permission('students.import', 'description') }}
+{{-- → "Importar estudiantes desde un archivo Excel" --}}
+```
+
+The helper is safe to call anywhere — if the translation key does not exist it falls back to a cleaned version of the raw permission string, so the UI never surfaces raw dot-notation to end users.
+
+<Note>
+  `SchoolScope` is automatically bypassed for all routes under `admin/*`. The `Role` model registers an anonymous global scope that calls `->withoutGlobalScope(SchoolScope::class)` whenever `request()->is('admin/*')` is true. This means permission checks, role listings, and role assignments performed in the admin panel correctly operate across all schools without any manual scope bypass.
+</Note>

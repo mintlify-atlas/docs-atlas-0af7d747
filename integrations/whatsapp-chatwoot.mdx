@@ -1,0 +1,217 @@
+---
+title: "WhatsApp and Chatwoot Communications Setup"
+sidebarTitle: "WhatsApp & Chatwoot"
+description: "Connect ORVIAN to Evolution API for WhatsApp attendance alerts and Chatwoot for school messaging. Configure environment variables and test the integrations."
+---
+
+ORVIAN's Communications module integrates two external services: **Evolution API** (WhatsApp) for automated attendance alerts sent to student tutors, and **Chatwoot** for a web-based messaging center accessible by school directors. Both services are optional and configured entirely through environment variables — neither requires code changes to enable or disable.
+
+## WhatsApp via Evolution API
+
+WhatsApp messaging in ORVIAN is handled by `WhatsAppService` (`app/Services/Communications/WhatsAppService.php`), a singleton HTTP client registered in `AppServiceProvider`. Key architectural decisions:
+
+- **Sender-only** — ORVIAN dispatches WhatsApp messages but does **not** process or listen for incoming messages. There are no webhooks or inbound message handlers.
+- **Asynchronous delivery** — all message sending happens through `SendAttendanceAlertJob`, a queued job with **3 retries** and a **60-second backoff**. This ensures a failed Evolution API call never blocks the web request or delays attendance recording.
+- **Anti-spam cache** — `AttendanceAlertEvaluator` protects against alert flooding with a weekly cache key per student per alert type (`alert_{type}_{student_id}_{weekOfYear}`, TTL 7 days). A tutor receives at most one absence alert and one tardiness alert per calendar week, regardless of how many times the evaluator runs.
+- **Phone normalization** — Evolution API expects the phone number without the leading `+`. `WhatsAppService::sendTextMessage()` strips it automatically: `$normalizedPhone = ltrim($phone, '+')`.
+
+## Setting Up Evolution API
+
+<Steps>
+  <Step title="Deploy Evolution API on your VPS">
+    Follow the [Evolution API documentation](https://doc.evolution-api.com) to install and start the service on your server. Evolution API can run as a Docker container or a Node.js process.
+  </Step>
+  <Step title="Create and connect a WhatsApp instance">
+    In the Evolution API manager, create a new instance and scan the QR code with the WhatsApp account that will send messages on behalf of the school. Wait for the state to show `open` (connected).
+  </Step>
+  <Step title="Note your credentials">
+    Collect three values from your Evolution API setup:
+    - **Instance name** — the exact name you gave the instance (e.g., `orvian-demo`)
+    - **API URL** — the base URL of your Evolution API server (e.g., `https://evolution.orvian.com.do`)
+    - **API key** — the global API key configured in Evolution API
+  </Step>
+  <Step title="Set environment variables in Laravel">
+    Add the following to your `.env` file:
+
+    ```dotenv
+    EVOLUTION_API_URL=https://evolution.orvian.com.do
+    EVOLUTION_API_KEY=evolution_api_key_12345
+    EVOLUTION_INSTANCE_NAME=orvian-demo
+    ```
+  </Step>
+  <Step title="Test the integration">
+    Run the demo command to fire test alerts for all schools:
+
+    ```bash
+    php artisan orvian:demo-fire-attendance-alerts
+    ```
+
+    Check Laravel logs (`storage/logs/laravel.log`) for `WhatsAppService: Mensaje enviado` entries confirming successful delivery, or `WhatsAppService: Respuesta no exitosa` with the Evolution API status code if something is misconfigured.
+  </Step>
+</Steps>
+
+## WhatsApp Message Format
+
+ORVIAN uses two message templates defined in `WhatsAppTemplates` (`app/Services/Communications/WhatsAppTemplates.php`). Both use WhatsApp's native text formatting — `*bold*` and `_italic_`.
+
+**Absence alert** (`absenceAlert`):
+
+```
+📋 *ORVIAN — Notificación de Asistencia*
+
+Estimado/a tutor(a) *[Tutor Name]*,
+
+Le informamos que su representado/a *[Student Full Name]* ha acumulado *[N] ausencia(s) injustificada(s)* durante el mes de [Month Year].
+
+Le solicitamos comunicarse con la dirección del centro para coordinar el seguimiento correspondiente.
+
+_Este mensaje es generado automáticamente por el Sistema de Gestión ORVIAN._
+```
+
+**Tardiness alert** (`tardinessAlert`):
+
+```
+⏰ *ORVIAN — Aviso de Puntualidad*
+
+Estimado/a tutor(a) *[Tutor Name]*,
+
+Le notificamos que su representado/a *[Student Full Name]* ha registrado *[N] llegada(s) tarde* durante el mes de [Month Year].
+
+La puntualidad es fundamental para el aprovechamiento académico. Le agradecemos su atención.
+
+_Este mensaje es generado automáticamente por el Sistema de Gestión ORVIAN._
+```
+
+The gendered term (`su representado` / `su representada`) is derived from the student's `gender` field (`M` / `F`) in the database. The tutor name comes from `students.tutor_name` and the phone from `students.tutor_phone`.
+
+## Alert Scheduling
+
+The `orvian:evaluate-attendance-alerts` Artisan command scans all active students, evaluates their monthly absence and tardiness counts against the configured thresholds (default: **3** for each), and dispatches `SendAttendanceAlertJob` for qualifying students.
+
+- **Scheduled at 16:00 daily** in `routes/console.php`, with `withoutOverlapping()` to prevent concurrent runs if a previous execution is still processing a large school.
+- **Thresholds** are configurable via `.env`:
+
+  ```dotenv
+  ALERT_ABSENCE_THRESHOLD=3
+  ALERT_TARDINESS_THRESHOLD=3
+  ```
+
+- **Manual run** for a specific school:
+
+  ```bash
+  php artisan orvian:evaluate-attendance-alerts --school=1
+  ```
+
+- **Manual run** for all schools:
+
+  ```bash
+  php artisan orvian:evaluate-attendance-alerts
+  ```
+
+A summary log entry is written after each run, including the count of students evaluated, alerts dispatched, and students skipped (due to missing `tutor_phone`).
+
+## Setting Up Chatwoot
+
+<Steps>
+  <Step title="Deploy Chatwoot or use the hosted instance">
+    You can self-host Chatwoot on your VPS by following the [Chatwoot deployment guide](https://www.chatwoot.com/docs/self-hosted), or use the ORVIAN-managed instance at `chat.orvian.com.do` if your contract includes it.
+  </Step>
+  <Step title="Create a Superadmin account and note the API token">
+    Log into Chatwoot as a Superadmin. Go to **Profile Settings → Access Token** and copy the API access token. This is the token ORVIAN uses for all server-to-server API calls (agent creation, conversation queries).
+  </Step>
+  <Step title="Note your Account ID">
+    The account ID is visible in the Chatwoot URL when logged in: `https://chat.orvian.com.do/app/accounts/1/...`. It is typically `1` for single-tenant deployments.
+  </Step>
+  <Step title="Generate an HMAC token for SSO">
+    In Chatwoot, go to **Settings → Integrations → Identity Verification**. Generate or copy the HMAC token for the inbox you want to use for SSO. This token must match `CHATWOOT_HMAC_TOKEN` in Laravel exactly — it is the shared secret used to sign user identity.
+  </Step>
+  <Step title="Set environment variables in Laravel">
+    ```dotenv
+    CHATWOOT_BASE_URL=https://chat.orvian.com.do
+    CHATWOOT_API_ACCESS_TOKEN=your-superadmin-api-token
+    CHATWOOT_ACCOUNT_ID=1
+    CHATWOOT_HMAC_TOKEN=your-hmac-token
+    ```
+  </Step>
+</Steps>
+
+## How Chatwoot SSO Works
+
+ORVIAN uses **full-redirect SSO** with Chatwoot's Identity Verification feature — no iframe is embedded in the dashboard.
+
+When a Director clicks the **Messages** tile:
+
+1. Laravel's controller calls `ChatwootService::generateIdentifierHash($user->email)`, which computes:
+   ```php
+   hash_hmac('sha256', $user->email, config('communications.chatwoot.hmac_token'))
+   ```
+   This hash is computed **server-side only** and never exposed to the browser or JavaScript.
+
+2. The controller builds a redirect URL:
+   ```
+   https://chat.orvian.com.do?email=director@school.do&identifier_hash=<computed-hash>
+   ```
+
+3. The browser is redirected to that URL. Chatwoot verifies the `identifier_hash` against its own copy of the HMAC token. If the signature matches, Chatwoot logs the user in automatically.
+
+4. The Director lands directly in the Chatwoot inbox — no separate login is required.
+
+**Security note:** the `CHATWOOT_HMAC_TOKEN` must never appear in client-side code, JavaScript bundles, or API responses. It is a server-side secret.
+
+## Agent Sync
+
+When a school completes onboarding (either via `CompleteOnboardingAction` or `CompleteTenantOnboardingAction`), the Director is automatically registered as a Chatwoot agent:
+
+```php
+// Inside the onboarding action, after DB commit:
+DB::afterCommit(function () use ($user, $chatwoot) {
+    $chatwoot->syncUserAsAgent($user);
+});
+```
+
+`DB::afterCommit` ensures the agent sync only runs after the database transaction commits successfully — preventing orphaned Chatwoot agents if the onboarding transaction rolls back.
+
+`ChatwootService::syncUserAsAgent()` logic:
+
+1. Calls `findAgentByEmail()` to check whether the Director already exists as an agent (prevents duplicates on re-runs).
+2. If not found, calls `createAgent()` with the Director's `name`, `email`, and `role: 'agent'`.
+3. On success, stores the Chatwoot agent ID in `users.preferences['chatwoot_agent_id']` for future reference.
+4. `createAgent()` **logs the full HTTP response body** (status + body) regardless of success or failure — this was added specifically to catch silent 4xx responses that Chatwoot returns for malformed email addresses without raising an HTTP error.
+
+<Note>
+  The `communications` module tile must have `visible: true` in `config/modules.php` for the **Messages** link to appear on the school dashboard. This is `true` by default as of v0.5.0. In earlier versions (v0.4.0–v0.4.1), the tile was set to `visible: false` and the module was listed as coming soon.
+</Note>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="WhatsApp messages not sending">
+    1. Verify that `EVOLUTION_INSTANCE_NAME` in your `.env` **exactly matches** the instance name in your Evolution API manager — it is case-sensitive.
+    2. Open the Evolution API manager and confirm the instance status is `open` (connected). Instances can expire or disconnect if the WhatsApp session is invalidated (phone logged out, number banned, inactivity).
+    3. Check the Laravel log for `WhatsAppService: Respuesta no exitosa` — the logged `status` and `body` fields will show the Evolution API error code.
+    4. Ensure the queue worker is running (`php artisan queue:work`) — `SendAttendanceAlertJob` is dispatched asynchronously and will not run without a worker.
+  </Accordion>
+
+  <Accordion title="Chatwoot SSO login fails">
+    The most common cause is a mismatch between the `CHATWOOT_HMAC_TOKEN` in Laravel and the token configured in Chatwoot's Identity Verification settings.
+
+    1. Go to Chatwoot → **Settings → Integrations → Identity Verification** and copy the token shown there.
+    2. Paste it into `CHATWOOT_HMAC_TOKEN` in your Laravel `.env`.
+    3. Run `php artisan config:clear` to reload the configuration.
+    4. Try the SSO redirect again. If it still fails, verify that the `email` being passed matches exactly what Chatwoot expects (no trailing spaces, correct domain).
+  </Accordion>
+
+  <Accordion title="No agents in Chatwoot after onboarding">
+    1. Check `storage/logs/laravel.log` for `ChatwootService: Error en sincronización` entries — these will contain the exception message.
+    2. Search for log lines from `createAgent` that include the HTTP status and response body. A `422 Unprocessable Entity` typically means the email format is invalid or already taken in Chatwoot under a different account.
+    3. If the agent was partially created, use the Chatwoot admin panel to delete the duplicate and re-trigger sync by re-running the onboarding action, or call `ChatwootService::syncUserAsAgent($user)` manually in a Tinker session.
+    4. Confirm `CHATWOOT_API_ACCESS_TOKEN` belongs to a **Superadmin** account — agent creation requires Superadmin privileges.
+  </Accordion>
+
+  <Accordion title="Student's tutor not receiving alerts">
+    1. Verify that the student's `tutor_phone` field is populated and in **E.164 format**: `+1XXXXXXXXXX` for Dominican numbers (e.g., `+18091234567`). Formats like `809-123-4567` or `8091234567` (without country code) will fail.
+    2. Check whether the anti-spam cache is suppressing the alert. The cache key `alert_absence_{student_id}_{weekOfYear}` prevents more than one absence alert per week per student. To force re-send during testing, run `php artisan cache:clear` (note: this clears all cache).
+    3. Look for `AttendanceAlertEvaluator` log entries — students without `tutor_phone` are silently skipped and reported in the evaluator's skipped report, not as errors.
+    4. Confirm the WhatsApp instance is active and the tutor's number is not blocked in WhatsApp.
+  </Accordion>
+</AccordionGroup>

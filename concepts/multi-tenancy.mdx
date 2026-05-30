@@ -1,0 +1,167 @@
+---
+title: "Multi-Tenancy in ORVIAN: School Data Isolation"
+sidebarTitle: "Multi-Tenancy"
+description: "Each school in ORVIAN is a fully isolated tenant. Learn how SchoolScope, middleware, and model scoping enforce data boundaries."
+---
+
+ORVIAN is a **multi-tenant monolith** in which each school is its own fully isolated tenant. The tenant identifier is `school_id` — a foreign key present on every `Tenant/` model and on the `users` table. Rather than separate databases or schemas, ORVIAN enforces isolation at the query layer using an Eloquent global scope, so every query against tenant data is automatically filtered to the school that owns the active session. Tenant context is resolved once at the middleware layer from the authenticated user and then made available application-wide.
+
+---
+
+## How Tenant Isolation Works
+
+### `SchoolScope` — the query filter
+
+`App\Models\Scopes\SchoolScope` is an Eloquent `Scope` that is registered as a **global scope** on every model inside `app/Models/Tenant/`. When a `Tenant/` model is queried, `SchoolScope::apply()` inspects the currently authenticated user and appends a `WHERE` clause before the query reaches the database:
+
+```php
+// app/Models/Scopes/SchoolScope.php
+public function apply(Builder $builder, Model $model): void
+{
+    if (Auth::check()) {
+        $user = Auth::user();
+
+        // Primary source: the user's own school_id.
+        // Fallback: an impersonation session started by TechnicalSupport / Owner.
+        $schoolId = $user->school_id ?: session('impersonated_school_id');
+
+        if ($schoolId) {
+            $column = $model instanceof \App\Models\Tenant\School
+                ? $model->getKeyName()   // 'id' on the School model itself
+                : 'school_id';           // 'school_id' on all other Tenant models
+
+            $builder->where($model->getTable() . '.' . $column, $schoolId);
+        }
+        // If neither value is present, a platform admin (Owner) sees all records.
+    }
+}
+```
+
+The result is that calling `Student::all()`, `AttendanceSession::where(...)`, or any other `Tenant/` model query automatically appends `WHERE school_id = <current_school_id>` — no manual filtering required in services or Livewire components.
+
+### Spatie Permissions — team-scoped roles
+
+ORVIAN uses `spatie/laravel-permission` with **`teams = true`**. The "team" concept maps directly to `school_id`. When the `IdentifyTenant` middleware runs, it calls:
+
+```php
+setPermissionsTeamId($schoolId);
+```
+
+This tells Spatie to scope every `hasRole()` / `hasPermissionTo()` check to that school's roles, preventing a Teacher at one school from inheriting permissions that belong to a Teacher at a different school.
+
+---
+
+## User Types and Tenant Context
+
+Every user in ORVIAN has exactly one login path. The branching decision is made in `AuthenticatedSessionController@store` immediately after authentication succeeds, based on whether `school_id` is `null`:
+
+| `school_id` value | User types | Post-login redirect |
+|---|---|---|
+| `null` | Owner, TechnicalSupport, Administrative | `/admin/hub` (`admin.hub`) |
+| Non-null | School Principal (Director), Academic Coordinator, Teacher, Secretary, Student, Staff | `/app/dashboard` (`app.dashboard`) |
+
+```php
+// app/Http/Controllers/Auth/AuthenticatedSessionController.php
+return redirect()->intended(
+    is_null(Auth::user()->school_id)
+        ? route('admin.hub')
+        : route('app.dashboard')
+);
+```
+
+**TechnicalSupport impersonation.** An Owner or TechnicalSupport user can select a school to administer from the Admin Hub. The chosen `school_id` is stored in `session('impersonated_school_id')`. `SchoolScope` and `IdentifyTenant` both check this session key as a fallback, so impersonating users see exactly the data that school's tenant users see — without needing a non-null `school_id` on their user record.
+
+---
+
+## Platform Admin vs. School Panel
+
+ORVIAN splits its front end into two completely separate route groups, each protected by its own middleware stack:
+
+### `/admin/*` — Platform Admin Panel
+
+```php
+// routes/web.php
+Route::middleware(['auth', 'verified', 'admin.global'])
+    ->prefix('admin')
+    ->name('admin.')
+    ->group(function () {
+        foreach (glob(base_path('routes/admin/*.php')) as $file) {
+            require $file;
+        }
+    });
+```
+
+The `admin.global` alias maps to `EnsureGlobalAdminAccess`. It blocks any user whose `school_id` is **not** `null` from entering the admin panel and redirects them to `app.dashboard`:
+
+```php
+// app/Http/Middleware/EnsureGlobalAdminAccess.php
+if (Auth::user()->school_id !== null) {
+    return redirect()->route('app.dashboard');
+}
+```
+
+`SchoolScope` is also automatically bypassed on `admin/*` routes. The `Role` model registers an additional anonymous global scope that strips `SchoolScope` from the builder whenever the request path starts with `admin/`, so admin users can manage roles and data across all schools without interference from tenant filtering.
+
+### `/app/*` — School Panel
+
+```php
+// routes/web.php
+Route::middleware(['auth', 'verified', 'onboarding.complete', 'school.active'])
+    ->prefix('app')
+    ->name('app.')
+    ->group(function () {
+        foreach (glob(base_path('routes/app/*.php')) as $file) {
+            require $file;
+        }
+    });
+```
+
+The `IdentifyTenant` middleware (bound as part of the `app` route group) sets the Spatie team ID and resolves the current `School` instance into the service container (`app()->instance('currentSchool', $school)`), making it available anywhere in the request lifecycle.
+
+---
+
+## School Lifecycle
+
+A school goes through a deterministic lifecycle from self-registration to full operation:
+
+### 1. Stub creation
+
+When a new school self-registers through the public landing page, a minimal user account is created. At this point the school's record does not yet exist — the user is treated as a platform user pending onboarding.
+
+### 2. Wizard completion
+
+The registered user is directed to the **Tenant Setup Wizard** (`/wizard`, `TenantSetupWizard` Livewire component). The wizard collects school metadata (SIGERD code, name, modality, academic levels, shifts) and plan selection. On submission, `CompleteOnboardingAction::execute()` runs inside a database transaction:
+
+1. Creates the `School` record with `is_configured = true` and `is_active = true`.
+2. Syncs academic levels (`levels()->sync()`).
+3. Creates shift records with MINERD-standard times.
+4. Calls **`SchoolRoleService::seedDefaultRoles($school)`** to clone all base roles for the new tenant.
+5. Calls `CreateSchoolPrincipalAction::execute()` to create the Director user and assign them the `School Principal` role within the school's team scope.
+6. Fires the **`SchoolConfigured`** event, carrying the new `School` instance and academic setup data.
+
+### 3. `SchoolConfigured` event
+
+```php
+// app/Events/Tenant/SchoolConfigured.php
+class SchoolConfigured
+{
+    use Dispatchable, SerializesModels;
+
+    public function __construct(
+        public School $school,
+        public array  $academicData
+    ) {}
+}
+```
+
+Listeners attached to this event handle downstream initialization tasks such as creating the initial academic year (`CreateInitialAcademicYear`) and scaffolding the academic structure (`SetupAcademicStructure`). These run asynchronously via the database queue so the HTTP response is not blocked.
+
+---
+
+<Warning>
+  Never query `Tenant/` models (anything under `app/Models/Tenant/`) outside of an authenticated tenant context unless you explicitly call `->withoutGlobalScope(SchoolScope::class)` and fully understand the data cross-contamination risk. Without an active `school_id`, `SchoolScope` is a no-op and your query will return records from **every school in the database**. This is the correct behaviour for platform-admin tooling, but it is a critical data-leak bug in school-facing code.
+</Warning>
+
+<Note>
+  The `EnsureSchoolIsActive` middleware (registered as `school.active`) runs on every `/app/*` request. If the school's `is_active` flag is `false`, the user is redirected to `app.notice.inactive`. If `is_suspended` is `true` (e.g., overdue payment), the user is redirected to `app.notice.suspended`. Both notice routes are defined outside the restrictive middleware group to prevent redirect loops.
+</Note>

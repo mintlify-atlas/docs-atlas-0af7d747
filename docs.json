@@ -1,72 +1,94 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "ORVIAN",
+  "theme": "almond",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#E8611A",
+    "light": "#F5A571",
+    "dark": "#1A2744"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/Elian-D/ORVIAN"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/Elian-D/ORVIAN"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/multi-tenancy",
+              "concepts/roles-permissions",
+              "concepts/modules"
+            ]
+          },
+          {
+            "group": "Attendance Module",
+            "pages": [
+              "modules/attendance/overview",
+              "modules/attendance/daily-sessions",
+              "modules/attendance/recording-methods",
+              "modules/attendance/classroom-attendance",
+              "modules/attendance/excuses"
+            ]
+          },
+          {
+            "group": "Academic Module",
+            "pages": [
+              "modules/academic/overview",
+              "modules/academic/students",
+              "modules/academic/teachers",
+              "modules/academic/courses"
+            ]
+          },
+          {
+            "group": "Administration",
+            "pages": [
+              "administration/school-setup",
+              "administration/user-management",
+              "administration/plans-features",
+              "administration/communications"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment & Integrations",
+        "groups": [
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/configuration",
+              "deployment/artisan-commands"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/facial-recognition",
+              "integrations/whatsapp-chatwoot"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

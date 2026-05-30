@@ -1,0 +1,108 @@
+---
+title: "ORVIAN Environment Variables Reference"
+sidebarTitle: "Configuration"
+description: "Complete reference for ORVIAN's .env configuration: database, cache, queues, mail, third-party APIs, and notification thresholds."
+---
+
+ORVIAN is configured entirely through environment variables in `.env`. The `.env.example` file ships with every variable pre-documented and organized by category, so a new installation only requires copying it and filling in the secrets. Below is the complete reference, grouped by concern.
+
+<Tip>
+After changing any configuration value, run `php artisan config:clear` to flush the compiled config cache. If you have previously cached your config with `php artisan config:cache`, you must re-run that command as well for the new values to take effect.
+</Tip>
+
+## Application
+
+Core identity and runtime settings for the Laravel application.
+
+| Variable | Default | Description |
+|---|---|---|
+| `APP_NAME` | `Laravel` | Display name used in emails, page titles, and notifications. |
+| `APP_ENV` | `local` | Runtime environment. Accepted values: `local`, `production`, `testing`. |
+| `APP_KEY` | *(empty)* | 32-character encryption key. Generate with `php artisan key:generate`. Required before the app can start. |
+| `APP_DEBUG` | `true` | Enables detailed error pages and stack traces. Set to `false` in production. |
+| `APP_URL` | `http://localhost` | Public-facing URL of the application. Used for link generation, QR codes, and signed URLs. |
+| `APP_LOCALE` | `en` | Default application locale used for translations and date formatting. |
+
+## Database
+
+ORVIAN supports **SQLite** (development default) and **MySQL / MariaDB** (recommended for production).
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_CONNECTION` | `sqlite` | Database driver. Use `sqlite` for local development, `mysql` for staging and production. |
+| `DB_HOST` | `127.0.0.1` | Database server hostname. Set to `mysql` when running inside the Docker Compose network. |
+| `DB_PORT` | `3306` | TCP port for the MySQL server. |
+| `DB_DATABASE` | `laravel` | Name of the database schema to connect to. |
+| `DB_USERNAME` | *(empty)* | Database user with read/write access to `DB_DATABASE`. |
+| `DB_PASSWORD` | *(empty)* | Password for `DB_USERNAME`. |
+
+## Cache, Sessions, and Queues
+
+These three drivers are configured independently and should all point to Redis in production for consistency and performance.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SESSION_DRIVER` | `database` | Where PHP sessions are stored. Use `redis` in production for shared-session support across processes. |
+| `CACHE_STORE` | `database` | Application cache backend. Use `redis` for fast in-memory caching. |
+| `QUEUE_CONNECTION` | `database` | Queue backend for async jobs (alert dispatching, Excel exports, etc.). Use `redis` for reliable, real-time processing. |
+| `REDIS_CLIENT` | `predis` | PHP Redis client library. ORVIAN uses `predis/predis`; leave this value unchanged. |
+| `REDIS_HOST` | `redis` / `127.0.0.1` | Redis server hostname. Use `redis` inside Docker Compose, `127.0.0.1` for a local Redis installation. |
+| `REDIS_PORT` | `6379` | TCP port for the Redis server. |
+
+## Mail
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAIL_MAILER` | `log` | Mail transport. Set to `smtp` in production, or keep `log` to write emails to the Laravel log during development. |
+| `MAIL_HOST` | `127.0.0.1` | SMTP server hostname. When using Docker, Mailpit listens on `mailpit` (port 1025). |
+| `MAIL_PORT` | `2525` | SMTP port. Mailpit's SMTP port is `1025`. |
+| `MAIL_FROM_ADDRESS` | `hello@example.com` | The `From:` address on all outgoing emails. |
+| `MAIL_FROM_NAME` | `${APP_NAME}` | The `From:` name on all outgoing emails. |
+
+## Third-Party Services
+
+External APIs integrated directly into ORVIAN's core feature set.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GOOGLE_MAPS_API_KEY` | *(empty)* | API key for the Google Maps JavaScript API, used to display school locations on the platform admin map. |
+| `FACIAL_API_URL` | `http://host.docker.internal:8001` | Base URL of the optional Python facial-recognition microservice. The default points to a service running on the Docker host machine. |
+| `FACIAL_API_KEY` | `your-secret-key` | Shared secret sent as a bearer token on every request to the facial-recognition API. Must match the value configured in the microservice. |
+
+## Chatwoot Integration
+
+Chatwoot powers ORVIAN's built-in live-chat widget and parent support inbox.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CHATWOOT_BASE_URL` | `https://chat.orvian.com.do` | Base URL of your Chatwoot instance. |
+| `CHATWOOT_API_ACCESS_TOKEN` | *(empty)* | Superadmin API token from your Chatwoot account settings. Used for server-side API calls. |
+| `CHATWOOT_ACCOUNT_ID` | `1` | Numeric ID of the Chatwoot account to associate contacts and conversations with (typically `1`). |
+| `CHATWOOT_HMAC_TOKEN` | *(empty)* | HMAC token for Chatwoot Identity Verification (SSO). Ensures the widget session is authenticated and tamper-proof. |
+
+## Evolution API (WhatsApp)
+
+Evolution API is the WhatsApp gateway ORVIAN uses to send attendance alerts and notifications to guardians.
+
+| Variable | Default | Description |
+|---|---|---|
+| `EVOLUTION_API_URL` | `https://evolution.orvian.com.do` | Base URL of your Evolution API instance. |
+| `EVOLUTION_API_KEY` | *(empty)* | Global API key for authenticating requests to the Evolution API. |
+| `EVOLUTION_INSTANCE_NAME` | `orvian-demo` | Name of the WhatsApp instance registered in Evolution API that messages are sent from. |
+
+## Alert Thresholds
+
+These variables control when ORVIAN automatically dispatches WhatsApp notifications to a student's guardian. Thresholds are evaluated monthly by the `orvian:evaluate-attendance-alerts` scheduled command.
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALERT_ABSENCE_THRESHOLD` | `3` | Number of full absences in the current calendar month before an alert is sent to the guardian. |
+| `ALERT_TARDINESS_THRESHOLD` | `3` | Number of late-arrival events in the current calendar month before an alert is sent to the guardian. |
+
+<Note>
+ORVIAN reads the application version from the `VERSION` file in the project root and caches the result permanently under the key `orvian.app_version`. The version string is displayed in the platform admin footer and API responses. After each deployment, clear this cache entry so the new version is reflected immediately:
+
+```bash
+php artisan cache:forget orvian.app_version
+```
+</Note>

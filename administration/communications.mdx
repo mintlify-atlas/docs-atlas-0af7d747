@@ -1,0 +1,138 @@
+---
+title: "WhatsApp Alerts and Chatwoot Messaging Integration"
+sidebarTitle: "Communications"
+description: "ORVIAN sends automated WhatsApp absence alerts via Evolution API and provides Chatwoot SSO access for school directors to manage conversations."
+---
+
+ORVIAN's Communications module connects two external services: **Evolution API** (WhatsApp) for automated attendance alerts sent to student guardians, and **Chatwoot** for a school messaging center accessible to Directors. Both integrations are configured entirely via `.env` variables and are registered as HTTP singletons in `AppServiceProvider`. Neither integration requires inbound webhook handling on ORVIAN's side.
+
+## WhatsApp Attendance Alerts
+
+ORVIAN uses `WhatsAppService` (`App\Services\Communications\WhatsAppService`) as its HTTP client to Evolution API. The service acts as a **sender only** — ORVIAN dispatches messages and does not process incoming WhatsApp replies.
+
+The full alert pipeline works as follows:
+
+1. **Scheduled trigger** — the `orvian:evaluate-attendance-alerts` Artisan command runs daily at **16:00** via `routes/console.php` with `withoutOverlapping()` to prevent concurrent runs.
+2. **Evaluation** — `AttendanceAlertEvaluator::evaluate(Student $student)` is called for each active student. It queries `PlantelAttendanceRecord` for the current calendar month and counts records with `status = 'absent'` and `status = 'late'`.
+3. **Threshold check** — if either count meets or exceeds the configured threshold, the evaluator checks an anti-spam cache key before dispatching.
+4. **Job dispatch** — `SendAttendanceAlertJob` is dispatched with the student, alert type, count, and month name. The job has **3 retries** and a **60-second backoff** between attempts.
+5. **Message send** — the job calls `WhatsAppService::sendTextMessage(string $phone, string $message)`. The phone number is stripped of the leading `+` before sending, as Evolution API expects the E.164 number without the plus sign.
+
+## Alert Thresholds
+
+Thresholds are configured in `.env` and read via `config/communications.php`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ALERT_ABSENCE_THRESHOLD` | `3` | Number of absences in the current month that triggers an alert |
+| `ALERT_TARDINESS_THRESHOLD` | `3` | Number of late arrivals in the current month that triggers an alert |
+
+**Anti-spam protection** — Before dispatching a job, `AttendanceAlertEvaluator` checks a cache key in the format:
+
+```
+alert_{type}_{student_id}_{weekOfYear}
+```
+
+For example: `alert_absence_42_21`. If this key exists, the job is **not** dispatched for that student this week. The cache entry is set with a **7-day TTL** when a job is dispatched. This guarantees a guardian receives at most one alert of each type per week per student, regardless of how many times the command runs.
+
+Students without a `tutor_phone` value are silently skipped. Their IDs are accumulated in `$skippedStudents` and logged as a single consolidated warning entry at the end of the command run.
+
+## WhatsApp Message Templates
+
+`WhatsAppTemplates` (`App\Services\Communications\WhatsAppTemplates`) provides two static methods that build the message body sent to guardians. Templates use WhatsApp's native markdown formatting: `*bold*` for emphasis and `_italic_` for secondary information.
+
+**Absence alert** (`WhatsAppTemplates::absenceAlert()`):
+
+```
+📋 *ORVIAN — Notificación de Asistencia*
+
+Estimado/a tutor(a) *{tutor_name}*,
+
+Le informamos que {su representado/a} *{student_full_name}* ha acumulado
+*{count} ausencia(s) injustificada(s)* durante el mes de {month}.
+
+Le solicitamos comunicarse con la dirección del centro para coordinar
+el seguimiento correspondiente.
+
+_Este mensaje es generado automáticamente por el Sistema de Gestión ORVIAN._
+```
+
+**Tardiness alert** (`WhatsAppTemplates::tardinessAlert()`):
+
+```
+⏰ *ORVIAN — Aviso de Puntualidad*
+
+Estimado/a tutor(a) *{tutor_name}*,
+
+Le notificamos que {su representado/a} *{student_full_name}* ha registrado
+*{count} llegada(s) tarde* durante el mes de {month}.
+
+La puntualidad es fundamental para el aprovechamiento académico.
+Le agradecemos su atención.
+
+_Este mensaje es generado automáticamente por el Sistema de Gestión ORVIAN._
+```
+
+Gender-aware phrasing (`su representado` / `su representada`) is resolved automatically from the student's `gender` field (`M` or `F`).
+
+<Note>
+  The `tutor_phone` field on the `Student` model must be stored in **E.164 format** (e.g., `+18091234567`) for WhatsApp delivery to work correctly. During SIGERD import, phone numbers are automatically normalized to E.164. For manually created or edited students, the form validates E.164 format before saving. Students missing a `tutor_phone` are skipped by the evaluator and their IDs are reported in the application log.
+</Note>
+
+## Running Alert Evaluation Manually
+
+You can trigger the evaluation outside the daily schedule using Artisan:
+
+```bash
+# Evaluate all schools
+php artisan orvian:evaluate-attendance-alerts
+
+# Evaluate a specific school
+php artisan orvian:evaluate-attendance-alerts --school=1
+
+# Test fire (demo data seeder)
+php artisan orvian:demo-fire-attendance-alerts
+```
+
+The command displays a progress bar as it iterates over active students and prints a warning summary at the end if any students were skipped due to missing phone numbers.
+
+<Warning>
+  WhatsApp requires a real **Evolution API** instance running on a VPS and connected to an active WhatsApp number. The instance must be in the `open` (connected) state for messages to deliver. Use `WhatsAppService::getInstanceStatus()` to check the connection state programmatically. Running the command against a disconnected or misconfigured instance will log a warning per failed send but will not throw exceptions that interrupt the evaluation loop.
+</Warning>
+
+## Chatwoot Messaging Center
+
+ORVIAN integrates with a self-hosted Chatwoot instance via `ChatwootService` (`App\Services\Communications\ChatwootService`), an HTTP singleton registered in `AppServiceProvider`.
+
+**Agent registration at onboarding** — When a school completes onboarding (via either `CompleteOnboardingAction` or `CompleteTenantOnboardingAction`), the Director's user account is registered as a Chatwoot agent via `ChatwootService::syncUserAsAgent()`. This call is wrapped in `DB::afterCommit` to guarantee it only fires after the outermost database transaction has committed — preventing the race condition where the agent registration is attempted before the user record is fully persisted.
+
+`syncUserAsAgent()` first checks `findAgentByEmail()` to avoid duplicate registrations. If the agent already exists, the method returns early. On successful creation, the Chatwoot-assigned agent ID is stored in `preferences['chatwoot_agent_id']` on the user record via `updateQuietly()`.
+
+**SSO access for Directors** — When a Director clicks the Messages tile in their dashboard, ORVIAN redirects them directly to `chat.orvian.com.do` with two query string parameters:
+
+- `email` — the Director's email address
+- `identifier_hash` — an HMAC-SHA256 signature computed server-side as `hash_hmac('sha256', $email, $hmacToken)`
+
+This is Chatwoot's **Identity Verification** SSO mechanism. The Director is logged in automatically without a password form. **No iframe is used** — the redirect is a full navigation to the external Chatwoot domain.
+
+The pending conversation count (open, assigned conversations) is fetched by `ChatwootService::getPendingConversationsCount()` and displayed as a badge on the Messages tile in the school dashboard.
+
+## Required Environment Variables
+
+Configure the following variables in your `.env` file:
+
+| Variable | Description |
+|----------|-------------|
+| `CHATWOOT_BASE_URL` | Full URL of your Chatwoot instance (e.g., `https://chat.orvian.com.do`) |
+| `CHATWOOT_API_ACCESS_TOKEN` | Superadmin API access token from the Chatwoot account settings |
+| `CHATWOOT_ACCOUNT_ID` | Numeric Chatwoot account ID (typically `1` for single-account installs) |
+| `CHATWOOT_HMAC_TOKEN` | HMAC token from Chatwoot Identity Verification settings — used to sign the `identifier_hash` for SSO |
+| `EVOLUTION_API_URL` | Base URL of your Evolution API instance (e.g., `https://evolution.orvian.com.do`) |
+| `EVOLUTION_API_KEY` | API key for authenticating requests to Evolution API |
+| `EVOLUTION_INSTANCE_NAME` | Name of the WhatsApp instance registered in Evolution API |
+
+All values are read through `config/communications.php` — update the config cache after changing `.env` values in production:
+
+```bash
+php artisan config:cache
+```

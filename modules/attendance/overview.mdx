@@ -1,0 +1,86 @@
+---
+title: "Attendance Module: Dual-Domain Tracking for Schools"
+sidebarTitle: "Overview"
+description: "ORVIAN's Attendance module tracks campus entry (Plantel) and classroom roll call independently, with cross-validation to detect hall-wandering."
+---
+
+ORVIAN's Attendance module operates on a **dual-domain architecture**: campus entry (*Plantel*) and classroom roll call (*Aula*) are tracked as two independent layers, then cross-validated in real time. This separation allows administrators to detect *pasilleo* — students who have registered their campus arrival but are absent from one or more class periods — a chronic monitoring gap in traditional single-layer systems. Each domain has its own records, permissions, and services, while sharing a unified session model that ties both layers to the same school day and shift.
+
+---
+
+## Attendance Domains
+
+ORVIAN separates attendance tracking into two distinct, complementary domains:
+
+| Domain | Spanish Term | Model | Responsibility |
+|--------|-------------|-------|----------------|
+| **Campus Entry** | Plantel | `PlantelAttendanceRecord` | Records the moment a student physically enters the school building. Captured via QR scan, facial recognition, or manual roll call at the front gate. Tied to a `DailyAttendanceSession` that must be opened by an administrator before recording can begin. |
+| **Classroom Roll Call** | Aula | `ClassroomAttendanceRecord` | Records per-subject attendance taken by the teacher inside the classroom. Tied to a `TeacherSubjectSection` assignment and inherits the student's Plantel status as its starting point. |
+
+The two domains are intentionally decoupled at the database level — each has its own table and service — but they are coupled at the business-logic level through `ClassroomAttendanceService`, which enforces cross-validation rules every time a teacher saves a roll call.
+
+---
+
+## Cross-Validation Rules
+
+The following rules are enforced automatically by `ClassroomAttendanceService::validateCrossAttendance()` and `detectDiscrepancies()`:
+
+| Plantel Status | Classroom Outcome | Alert |
+|----------------|-------------------|-------|
+| **Absent** (`absent`) | `ClassroomAttendanceRecord` is blocked — teacher cannot mark the student present. The system auto-applies `absent` status. | None (expected behaviour) |
+| **Present** (`present` or `late`) + classroom **absent** | Record is saved but flagged as a **pasilleo** discrepancy. Dashboard discrepancy panel surfaces the student and the number of missed classes. | ⚠️ Pasilleo alert |
+| **Excused** (`excused`) | Status propagates automatically to all `ClassroomAttendanceRecord` entries for that day. Teacher cannot override it to present. | None |
+| **No Plantel record** + approved excuse | Classroom record allowed; system treats the approved excuse as equivalent to a Plantel check-in for that day. | None |
+
+---
+
+## Module Routes
+
+All Attendance routes live under the `/app/attendance` prefix and are grouped inside `routes/app/attendance.php`. Each route is guarded by a Spatie permission gate.
+
+| URL | Livewire Component | Required Permission |
+|-----|--------------------|---------------------|
+| `/app/attendance/dashboard` | `AttendanceDashboard` | `attendance_plantel.reports` |
+| `/app/attendance/hub` | `AttendanceSessionHub` | `attendance_plantel.view` |
+| `/app/attendance/session` | `AttendanceSessionManager` | `attendance_plantel.open_session` |
+| `/app/attendance/manual` | `ManualAttendance` | `attendance_plantel.open_session` |
+| `/app/attendance/scanner` | `AttendanceScanner` | `attendance_plantel.record` |
+| `/app/attendance/plantel/history` | `PlantelAttendanceIndex` | `attendance_plantel.view` |
+| `/app/attendance/reports` | `AttendanceReports` | `attendance_plantel.reports` |
+| `/app/attendance/audit/{sessionId}` | `AttendanceAudit` | `attendance_plantel.verify` |
+| `/app/attendance/classroom` | `ClassroomAttendanceLive` | `attendance_classroom.record` |
+| `/app/attendance/classroom/history` | `ClassroomAttendanceHistory` | `attendance_classroom.view` |
+| `/app/attendance/excuses` | `ExcuseIndex` | `excuses.view` |
+
+---
+
+## Dashboard
+
+The `AttendanceDashboard` Livewire component (at `/app/attendance/dashboard`) is the primary operational view for coordinators and administrators. It auto-refreshes every 10 seconds via `wire:poll.10s` and presents four data panels in a single screen:
+
+**Real-time metrics** — Global presence rate (present + late / total enrolled), tardiness count, total absent, and unreviewed excuse count for the selected date. Metrics are broken down by shift using the shift filter.
+
+**ApexCharts line chart** — A 7-day rolling attendance-rate trend (`attendanceLineChart`) anchored to the **selected date**, not necessarily today. Selecting a past date in the calendar re-anchors the chart to show the 7 days ending on that date. Data is loaded via `loadWeeklyStats()` and dispatched to the chart via the `weekly-stats-updated` Livewire event.
+
+**Interactive calendar** — A month-view calendar with colour-coded day indicators: green (closed session, low absences), amber (session still open), red (closed session with >20% absence rate), and blank (no session = holiday).
+
+**Discrepancy panel (Pasilleo)** — Surfaces all students where `PlantelAttendanceRecord.status` is `present` or `late` but at least one `ClassroomAttendanceRecord` for the same day is `absent`. Powered by `ClassroomAttendanceService::detectDiscrepancies()`. Filterable by section.
+
+---
+
+## Sub-pages
+
+<CardGroup cols={2}>
+  <Card title="Daily Sessions" icon="calendar-days" href="/modules/attendance/daily-sessions">
+    Open and close school-day sessions, manage shifts, and audit the session change log.
+  </Card>
+  <Card title="Recording Methods" icon="qrcode" href="/modules/attendance/recording-methods">
+    QR wristband scan, facial recognition, and manual roll call — all from the same scanner interface.
+  </Card>
+  <Card title="Classroom Attendance" icon="chalkboard-teacher" href="/modules/attendance/classroom-attendance">
+    Teacher roll-call interface with real-time cross-validation against Plantel data.
+  </Card>
+  <Card title="Excuses" icon="file-circle-check" href="/modules/attendance/excuses">
+    Submit, review, and approve absence justifications that retroactively update attendance records.
+  </Card>
+</CardGroup>

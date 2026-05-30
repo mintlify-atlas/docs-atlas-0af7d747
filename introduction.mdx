@@ -1,0 +1,85 @@
+---
+title: "ORVIAN: Integrated School Management for Dominican Schools"
+sidebarTitle: "Introduction"
+description: "ORVIAN is a modular, multi-tenant Laravel platform that automates attendance, academics, and communications for Dominican public schools."
+---
+
+ORVIAN is a web-based school management platform built specifically for **Dominican Republic public schools**. In the typical Dominican school, attendance is taken by hand on paper lists, academic records live in disconnected spreadsheets, and parent communication happens informally — if at all. ORVIAN replaces that fragmented reality with a single, cohesive system that automates daily attendance capture (via facial recognition, QR bracelets, or manual roll-call), centralizes academic records and grade reporting, and delivers WhatsApp alerts to guardians — all while keeping every school's data completely isolated from every other school on the same platform. Built as an academic final project with real-world deployment in mind, ORVIAN is designed to be adopted progressively, module by module, without requiring schools to change everything at once.
+
+<Note>
+  ORVIAN was developed as an academic final project (proyecto final académico) at a Dominican university, but is architected for real-world deployment in Dominican Republic public schools. Every design decision — dual attendance domains, biometric opt-out, Spanish-language UI, MINERD subject catalogs, E.164 phone normalization for local numbers — reflects the actual constraints and workflows of those institutions.
+</Note>
+
+---
+
+## Key Capabilities
+
+<CardGroup cols={2}>
+  <Card title="Dual Attendance Tracking" icon="building-columns">
+    ORVIAN tracks attendance at two separate levels: **Plantel** (school-entry) and **Aula** (classroom). Cross-validation rules automatically flag "pasilleo" — students who are marked present at the gate but absent in class — giving coordinators real-time visibility into hallway incidents.
+  </Card>
+  <Card title="Three Recording Methods" icon="fingerprint">
+    Every school can choose how attendance is captured: **facial recognition** via an integrated Python FastAPI biometric service, **physical QR bracelets** scanned by the same kiosk camera, or **manual roll-call** through the classic pase de lista interface. Biometrics are always optional and never mandatory.
+  </Card>
+  <Card title="Multi-Tenant Isolation" icon="shield-halved">
+    Each school is an independent tenant. Eloquent global scopes and dedicated middleware ensure that no query, report, or user session can ever leak data across school boundaries. A single ORVIAN installation can serve dozens of schools without any data commingling.
+  </Card>
+  <Card title="Role-Based Access Control" icon="users-gear">
+    Fine-grained permissions powered by `spatie/laravel-permission` govern every action in the system. Roles include platform Owner, Director (Principal), Academic Coordinator, Teacher, and Student — each scoped to their tenant. Permission groups are context-aware, separating global admin permissions from tenant-level school permissions.
+  </Card>
+  <Card title="WhatsApp Alerts" icon="message">
+    When a student accumulates absences or late arrivals beyond configurable thresholds, ORVIAN automatically sends a WhatsApp message to the registered guardian via Evolution API. Anti-spam cache prevents repeated alerts within a seven-day window. Alert templates follow Dominican informal communication conventions.
+  </Card>
+  <Card title="Excel & PDF Import / Export" icon="file-arrow-up">
+    Teachers import student rosters directly from SIGERD-formatted Excel files. ORVIAN performs fuzzy section matching, normalizes phone numbers to E.164, and queues large imports as background jobs. Reports — attendance summaries, grade bulletins, discrepancy logs — export to both Excel (with formatting) and PDF (with school logo).
+  </Card>
+</CardGroup>
+
+---
+
+## System Modules
+
+ORVIAN is built as a **modular monolith**, meaning all eight modules ship in a single Laravel application but are designed with clean domain boundaries so schools can adopt them progressively.
+
+| Module | Description |
+|---|---|
+| **Core** | The platform nucleus. Manages schools (tenants), users, roles, and permissions. Handles authentication, authorization, active academic year tracking, and global system configuration. Every other module depends on Core. |
+| **Attendance** | The flagship module. Opens and closes daily attendance sessions by school shift, captures plantel (gate) and aula (classroom) attendance records, evaluates cross-domain consistency, manages excuse/justification workflows with document attachments, and fires WhatsApp alerts for threshold violations. |
+| **Academic** | Manages the educational structure: levels, grades, sections, MINERD subject catalogs, teacher assignments, and student enrollment per academic year. Includes a SIGERD-compatible Excel importer with wizard-style column mapping and a biometric enrollment kiosk. |
+| **Grades (Notas)** | Records calificaciones by competency block or grading period. Teachers can import grades from Excel; coordinators review and approve before publication. Students and guardians can then consult grades through their portal. Generates official PDF grade bulletins (boletines). |
+| **Classroom Local** | A lightweight, offline-friendly classroom layer. Teachers publish assignments (tareas) and distribute learning materials per subject. Students see their pending work in a personal task view. Teachers mark reviews and can optionally link completion to the Grades module. |
+| **Schedules** | Manages timetables at the course-section level and at the individual-teacher level. Directly integrated with the Attendance module so that tardiness thresholds are always evaluated against the actual scheduled start time for each section. |
+| **Reports** | Aggregates data across all modules into exportable reports: academic performance, attendance summaries by student or section, school-wide statistics, and discrepancy dashboards. All reports support PDF and Excel export with institutional branding. |
+| **Optional Modules** | Three additional capabilities available on higher-tier plans: **Incident Management** for behavioral records, **Internal Messaging** for staff communication, and a **Page Builder** that lets schools construct simple informational pages from predefined templates. |
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| **Language** | PHP 8.2+ |
+| **Framework** | Laravel 12 |
+| **Reactive UI** | Livewire 4 |
+| **Frontend JS** | Alpine.js |
+| **Styling** | Tailwind CSS + Vite |
+| **Database (dev)** | SQLite (zero-config default) |
+| **Database (production)** | MySQL 8 / MariaDB 10.6+ |
+| **Permissions** | `spatie/laravel-permission` v7 (teams mode, scoped by `school_id`) |
+| **Excel I/O** | `maatwebsite/excel` v3 |
+| **PDF Generation** | `barryvdh/laravel-dompdf` v3 |
+| **QR Codes** | `simplesoftwareio/simple-qrcode` v4 |
+| **Queues & Jobs** | Laravel database-backed queues (Redis optional in production) |
+| **Cache / Sessions** | Database driver (dev); Redis with `predis/predis` v3 (production) |
+| **Containerization** | Docker / Laravel Sail |
+| **Observability** | Laravel Pulse + Opcodes Log Viewer |
+| **Testing** | Pest v4 + `pestphp/pest-plugin-laravel` |
+| **Biometric Service** *(optional)* | Python FastAPI microservice (`orvian-facial-recognition`) using the `face_recognition` library, communicating with Laravel via HTTP |
+| **WhatsApp** | Evolution API (self-hosted on school VPS) |
+| **Helpdesk / Chat** | Chatwoot (self-hosted at `chat.orvian.com.do`) with HMAC-SHA256 SSO |
+
+---
+
+## License
+
+ORVIAN is released under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. Any public deployment of ORVIAN — including as a hosted service — requires that the full source code of the running version be made available to users. See the `LICENSE` file in the repository root for the complete license text.

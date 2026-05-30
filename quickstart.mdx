@@ -1,47 +1,216 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get ORVIAN Running Locally in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Clone ORVIAN, run composer setup, and start the full development stack with composer dev in just a few steps."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This quickstart walks you through spinning up a complete ORVIAN development environment on your local machine. By default ORVIAN uses **SQLite**, so you do not need a running MySQL server, a Docker daemon, or any external service to get the application up and running. All you need is PHP, Composer, and Node. Docker is listed as optional for teams that want MySQL or Redis parity with production from day one.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+---
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Install Prerequisites">
+    Make sure the following tools are available on your machine before proceeding:
+
+    | Tool | Minimum version | Notes |
+    |---|---|---|
+    | PHP | 8.2 | With `pdo_sqlite`, `mbstring`, `xml`, `curl`, `gd` extensions |
+    | Composer | 2.x | [getcomposer.org](https://getcomposer.org) |
+    | Node.js | 18 LTS | Required to build the Tailwind/Vite frontend |
+    | Git | Any recent | For cloning the repository |
+    | Docker *(optional)* | 24+ | Only needed if you want MySQL + Redis in dev |
+
+    Verify your PHP version:
 
     ```bash
-    npm install your-package
+    php -v
+    # PHP 8.2.x (cli)
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
+  <Step title="Clone the Repository">
     ```bash
-    your-cli init
+    git clone https://github.com/Elian-D/orvian.git && cd orvian
+    ```
+
+    The repository contains the full Laravel 12 application, Livewire components, Blade views, and the `composer.json` scripts that drive the entire local workflow.
+  </Step>
+
+  <Step title="Copy the Environment File">
+    ```bash
+    cp .env.example .env
+    ```
+
+    Out of the box, `.env.example` sets `DB_CONNECTION=sqlite` with the host/port/name fields commented out. This means Laravel will automatically use `database/database.sqlite` — no database server required.
+
+    <Note>
+      For production or MySQL-based local development, uncomment the `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, and `DB_PASSWORD` lines and change `DB_CONNECTION` to `mysql`. You will also want to configure the third-party service variables at the bottom of the file (`FACIAL_API_URL`, `CHATWOOT_*`, `EVOLUTION_API_*`) before enabling those modules.
+    </Note>
+
+    Key environment variables to review for a first-time local setup:
+
+    ```ini
+    APP_NAME=Laravel
+    APP_ENV=local
+    APP_DEBUG=true
+    APP_URL=http://localhost
+
+    DB_CONNECTION=sqlite        # Default — no DB server needed
+
+    QUEUE_CONNECTION=database   # Jobs run via DB, not Redis
+    CACHE_STORE=database        # Cache in DB, not Redis
+
+    # Optional biometric microservice
+    FACIAL_API_URL=http://host.docker.internal:8001
+    FACIAL_API_KEY=your-secret-key
+
+    # Optional WhatsApp alerts
+    EVOLUTION_API_URL=https://evolution.orvian.com.do
+    EVOLUTION_API_KEY=evolution_api_key_12345
+
+    # Notification thresholds
+    ALERT_ABSENCE_THRESHOLD=3
+    ALERT_TARDINESS_THRESHOLD=3
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
+  <Step title="Run composer setup">
     ```bash
-    your-cli start
+    composer setup
     ```
+
+    This single command runs the following sequence automatically:
+
+    1. **`composer install`** — downloads all PHP dependencies from `vendor/`
+    2. **`php artisan key:generate`** — writes `APP_KEY` into your `.env`
+    3. **`php artisan migrate --force`** — creates all database tables (SQLite file is created if missing)
+    4. **`npm install`** — installs all Node packages including Vite, Tailwind, and Alpine.js
+    5. **`npm run build`** — compiles and fingerprints all frontend assets into `public/build/`
+
+    The command takes approximately 60–90 seconds on a first run. Once it completes, the application is fully seeded with the Owner account structure and is ready to serve requests.
+  </Step>
+
+  <Step title="Start the Development Stack">
+    ```bash
+    composer dev
+    ```
+
+    This command uses `npx concurrently` to launch **four processes in parallel**, each color-coded in the terminal:
+
+    | Color | Process | Command |
+    |---|---|---|
+    | 🔵 Blue | Laravel HTTP server | `php artisan serve` |
+    | 🟣 Purple | Queue worker | `php artisan queue:listen --tries=1 --timeout=0` |
+    | 🔴 Red | Log tail (Pail) | `php artisan pail --timeout=0` |
+    | 🟠 Orange | Vite dev server (HMR) | `npm run dev` |
+
+    All four processes share the same terminal window. Stopping one (`Ctrl+C`) stops all of them (`--kill-others` flag). The queue worker is particularly important: Excel imports, WhatsApp alerts, and biometric encoding jobs all run asynchronously through the database queue.
+  </Step>
+
+  <Step title="Complete the Owner Installation">
+    Open your browser and navigate to:
+
+    ```
+    http://localhost:8000/register
+    ```
+
+    This is the **Owner self-installation screen** — it only appears once, on a fresh installation with no Owner account yet created. Fill in your name, email, and password to create the platform's superadmin account.
+
+    After registration you will be redirected to the **Admin Hub** at `/admin/hub`, where you manage all schools on the platform.
+  </Step>
+
+  <Step title="Configure Your First School">
+    From the Admin Hub, click **New School** or navigate directly to:
+
+    ```
+    http://localhost:8000/admin/setup
+    ```
+
+    The **School Setup Wizard** walks you through five steps:
+
+    1. **Plan selection** — choose the feature tier for this school
+    2. **School details** — name, MINERD code, province, municipality, shift (tanda)
+    3. **Academic structure** — select active levels and grades; the wizard auto-generates sections
+    4. **Academic year** — start and end dates (calculated from the current month by default)
+    5. **Director account** — creates the school's principal user and fires the `SchoolConfigured` event, which bootstraps the full academic structure asynchronously
+
+    Once the wizard completes, the Director can log in at `http://localhost:8000` and access the school panel at `/app/dashboard`.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+---
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+## Running Tests
+
+ORVIAN's test suite is built with **Pest v4**. Tests use an in-memory SQLite database by default, so they run without any database server.
+
+```bash
+# Run the full suite (clears config cache first)
+composer test
+
+# Run a single test by name filter
+php artisan test --filter=SomeName
+
+# Run a specific test file
+php artisan test tests/Feature/Attendance/PlantelAttendanceTest.php
+```
+
+`composer test` is equivalent to:
+
+```bash
+php artisan config:clear --ansi && php artisan test
+```
+
+The config-clear step ensures that any cached configuration from a previous run does not interfere with the test environment.
+
+---
+
+## Demo Data
+
+For development and UI testing, ORVIAN ships with a master demo seeder command that generates realistic attendance history for a school.
+
+```bash
+php artisan orvian:seed-demo --school_id=1 --students=75 --days=30
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `--school_id` | integer | *(required)* | The database ID of the school to seed. Find it in `/admin/schools`. |
+| `--students` | integer | `75` | Number of students to create and distribute across active sections. Maximum 150. |
+| `--days` | integer | `30` | Number of calendar days of attendance history to generate, counting back from today. Weekends are automatically skipped. |
+| `--fresh` | flag | `false` | **Destructive.** Deletes all existing attendance records for the school before seeding. Never use on a school with real data. |
+
+### What the seeder generates
+
+The command runs in five sequential phases:
+
+1. **Students** — creates up to 150 students (Dominican Spanish names) distributed evenly across active sections. QR codes are generated automatically by `StudentObserver`.
+2. **Teachers** — creates three demo teachers: *María González*, *Carlos Reyes*, and *Ana Castillo* (uses `firstOrCreate`, safe to re-run).
+3. **Subjects & Assignments** — creates or reuses *Lengua Española*, *Matemáticas*, and *Ciencias Sociales*. Generates a `TeacherSubjectSection` record for every teacher × section × academic year combination.
+4. **Attendance Records** — for each business day in the range, generates `DailyAttendanceSession`, `PlantelAttendanceRecord`, and `ClassroomAttendanceRecord` rows in bulk chunks of 200. Plantel distribution: 80% present, 10% late, 5% absent, 5% excused. Classroom distribution for present students: 75% present, 10% late, 10% absent (triggers pasilleo detection), 5% excused.
+5. **Excuses** — creates 3 approved `AttendanceExcuse` records on random students.
+
+<Note>
+  The `--fresh` flag prints an explicit console warning before deleting records. It is intended only for development reset workflows. Never run it against a school with real attendance data.
+</Note>
+
+---
+
+## What's Next
+
+<CardGroup cols={2}>
+  <Card title="Architecture" href="/architecture">
+    Learn how ORVIAN's modular monolith is structured — directory layout, Livewire patterns, the service layer, and how multi-tenancy is enforced at the Eloquent level.
+  </Card>
+  <Card title="Multi-Tenancy" href="/concepts/multi-tenancy">
+    Deep dive into how each school is isolated as a tenant: global scopes, `IdentifyTenant` middleware, and how Spatie Permission's teams mode is used with `school_id`.
+  </Card>
+  <Card title="Attendance Module" href="/modules/attendance/overview">
+    Understand the dual-domain attendance model (Plantel + Aula), cross-validation rules, the three capture methods, and how the daily session lifecycle works.
+  </Card>
+  <Card title="Academic Module" href="/modules/academic/overview">
+    Explore student and teacher management, the SIGERD Excel importer, biometric enrollment, and how subjects are assigned to teachers by section and academic year.
+  </Card>
+</CardGroup>

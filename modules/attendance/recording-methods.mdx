@@ -1,0 +1,99 @@
+---
+title: "Attendance Recording Methods: Facial, QR, and Manual"
+sidebarTitle: "Recording Methods"
+description: "ORVIAN supports three campus attendance recording methods: facial recognition, QR wristband scan, and manual roll call — all from the same interface."
+---
+
+Campus (*Plantel*) attendance can be recorded via three methods: **QR wristband scan**, **facial recognition**, and **manual roll call**. All three methods share the same session validation logic — recording is only permitted inside an open `DailyAttendanceSession` — and the same tardiness calculation logic, which compares the student's entry time against the school shift schedule. The method used for each entry (`qr`, `facial`, or `manual`) is stored on the `PlantelAttendanceRecord.method` column and exposed in reports and the audit trail.
+
+<Note>
+  The school must serve ORVIAN over **HTTPS** in production. The QR scanner and the facial recognition visor both use the browser's `getUserMedia()` API to access the device camera, which modern browsers restrict to secure origins only.
+</Note>
+
+---
+
+## QR Scanner
+
+**Route:** `/app/attendance/scanner` · **Permission:** `attendance_plantel.record` · **Component:** `AttendanceScanner`
+
+The scanner interface runs in **hybrid mode**: it primarily decodes QR codes from student wristbands but offers an instant fallback to manual search if a QR cannot be read. The workflow for a QR scan is:
+
+1. The Alpine.js QR reader detects a code in the camera frame and fires the `qrCodeScanned` Livewire event with the raw code string.
+2. `AttendanceScanner::qrCodeScanned()` looks up the student by `qr_code` field within the current school's active roster.
+3. If the student is found and has no entry record for today's shift, `recordStudentAttendance()` is called, which delegates to `PlantelAttendanceService::recordAttendance()` with `method = 'qr'`.
+4. The scanner displays a flash card with the student's photo, name, section, and recorded status, and adds the entry to the on-screen recent-scans list (capped at 10).
+
+**QR code generation:** Each student's `qr_code` value is a unique institutional code generated automatically by `StudentObserver` when the student record is first created. Coordinators do not need to manage or regenerate these codes manually.
+
+**Local asset delivery:** The QR decoding library is served from `public/vendor/face-api/face-api.min.js` — **not from a CDN**. This ensures the scanner continues to work in environments with strict outbound firewall rules (e.g. Fortinet-managed school networks) where third-party CDN domains may be blocked.
+
+---
+
+## Facial Recognition
+
+**Route:** `/app/attendance/scanner` (mode toggle) · **Permission:** `attendance_plantel.record` · **Component:** `AttendanceScanner`
+
+The same `AttendanceScanner` component handles facial recognition via a mode toggle (`qr` ↔ `facial`). The visor uses **`face-api.js`** with the lightweight `tiny_face_detector` model for in-browser face detection, combined with an Alpine.js capture loop that manages dwell time before submitting a frame.
+
+**How it works:**
+
+1. The Alpine.js visor continuously analyses camera frames using `face-api.js`. Once a face is detected with sufficient dwell time, it auto-captures the frame.
+2. The captured photo is uploaded as a Livewire file upload (`capturedPhoto`) and the `facialCaptureReady` event is fired.
+3. `AttendanceScanner::processFacialCapture()` calls `FaceEncodingManager::identifyStudent()`, which sends the image to the external Python biometric service configured via `FACIAL_API_URL` / `FACIAL_API_KEY` in `.env`.
+4. If the service returns a match, the student is looked up and `recordStudentAttendance()` is called with `method = 'facial'`. Confidence and distance metadata from the API response are stored in `PlantelAttendanceRecord.metadata` for audit purposes.
+5. If the service is unreachable, `FaceEncodingManager::isServiceHealthy()` returns `false` and the visor shows a warning. The operator can switch to QR or manual mode.
+
+**Biometric enrolment prerequisite:** Students must be enrolled in the biometric system via the **Biometric Kiosk** before facial recognition can identify them. See the Integrations → Facial Recognition section for enrolment and service configuration details.
+
+---
+
+## Manual Attendance
+
+**Route:** `/app/attendance/manual` · **Permission:** `attendance_plantel.open_session` · **Component:** `ManualAttendance`
+
+The manual interface provides a classic paginated roll-call list. It is the recommended method for bulk processing when neither QR scanners nor cameras are available, and for correcting individual statuses during or after a session.
+
+**Key features:**
+
+- **Instant search** — filter the student list by name or ID number using the `ManualAttendanceFilters` pipeline. Results update reactively via Livewire.
+- **Section filter** — narrow the list to a specific section within the selected shift.
+- **Per-student status toggle** — click to cycle each student through `present`, `late`, `absent`, and `excused`. Changes call `ManualAttendance::record()`, which delegates to `PlantelAttendanceService::recordAttendance()` with `method = 'manual'`.
+- **Status filter chips** — switch between "All", "Pending" (not yet recorded), and "Registered" (already have a record today).
+- **Excuse-aware display** — students with an approved excuse for today are flagged with an indicator. The `hide_excused` filter (enabled by default) removes them from the list so operators focus only on students who still need manual attention.
+- **Live statistics bar** — shows running totals of present, late, absent, excused, and pending students for the active shift, refreshed after every record action.
+
+The `ManualAttendance` component also requires `attendance_plantel.record` permission for the `record()` action itself (enforced at the method level), even though the route gate is `attendance_plantel.open_session`.
+
+---
+
+## Tardiness Validation
+
+`PlantelAttendanceService::determineStatus()` automatically classifies each student entry as **present** or **late** based on the school's shift schedule:
+
+```
+arrivalTime ≤ (shiftStart + 15 minutes)  →  STATUS_PRESENT
+arrivalTime >  (shiftStart + 15 minutes)  →  STATUS_LATE
+```
+
+The 15-minute grace window is calculated against `SchoolShift.start_time`. If no shift start time is configured, the service defaults to `present`. All time comparisons use the **`America/Santo_Domingo`** timezone (UTC-4, no DST), which is fixed in the application timezone configuration.
+
+When a status is explicitly provided in the recording payload (as in Manual Attendance, where the operator chooses the status), `determineStatus()` is bypassed and the supplied value is used directly.
+
+---
+
+## Audio Feedback
+
+The scanner interface provides audio cues to confirm each scan result without requiring the operator to look at the screen. Two sound files are used:
+
+| Event | File | Trigger |
+|-------|------|---------|
+| Successful registration | `public/assets/sounds/success.wav` | `attendance-recorded-success` Livewire event |
+| Facial recognition error | `public/assets/sounds/error.wav` | `attendance-facial-error` Livewire event |
+
+The `audioFeedback` Alpine.js component is registered globally in `layouts/app-module.blade.php`. It reads the user's audio preference from the `<meta name="audio-feedback">` tag injected into the page `<head>` by PHP, so the preference persists across sessions without requiring JavaScript storage. Users can toggle audio on/off and play a test sound from their **Profile → Preferences** page.
+
+---
+
+## Exporting Records
+
+Plantel attendance records can be exported to **Excel** and **PDF** from the Reports view at `/app/attendance/reports` (requires `attendance_plantel.reports`). Exports are handled by the `PlantelAttendanceExport` class and can be filtered by date range, shift, section, and status before downloading.
